@@ -73,7 +73,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="build the branch in a temp worktree, print decisions, discard it")
     cu.add_argument("--model", default=None, help="curator chat model (default: e2ekg's Fireworks GLM)")
     cu.add_argument("--judge-model", default=None, help="LLM-judge model; must differ from --model")
-    cu.add_argument("--raw-dir", required=True, help="raw sources (as-of view) the curator may read")
+    cu.add_argument("--raw-dir", required=True,
+                    help="raw sources (as-of view) the curator may read; must not contain hard links to "
+                         "answer-key files (path checks cannot detect hard links)")
     cu.add_argument("--run-id", default=None, help="default: curate-<UTC timestamp>")
     cu.add_argument("--repo", default=".")
     cu.add_argument("--db", default=DEFAULT_DB)

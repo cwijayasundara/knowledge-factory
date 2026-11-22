@@ -44,7 +44,18 @@ INGEST_TOOLS = ("list_flags", "kb_ls", "kb_grep", "kb_read", "raw_read")
 # and exactly the ingest subagent (no auto-added general-purpose one).
 HARNESS = HarnessProfile(excluded_tools=frozenset({"execute", "write_file", "edit_file", "delete"}),
                          general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False))
-_ANSWERS_ANY_CASE = "".join(f"[{c.lower()}{c.upper()}]" if c.isalpha() else c for c in FORBIDDEN_PART)
+def _fold_class(ch: str) -> str:
+    """A glob class of every BMP character that case-folds to ch (for "s": s, S and U+017F long s,
+    which macOS folds to s), so a case-insensitive file system cannot open the key under another
+    spelling. wcmatch, as deepagents 0.7.34 calls it, has no ignorecase flag per rule."""
+    if not ch.isalpha():
+        return ch
+    chars = {ch.lower(), ch.upper()} | {chr(cp) for cp in range(0x80, 0x10000)
+                                        if not 0xD800 <= cp <= 0xDFFF and chr(cp).casefold() == ch}
+    return "[" + "".join(sorted(chars)) + "]"
+
+
+_ANSWERS_ANY_CASE = "".join(_fold_class(c) for c in FORBIDDEN_PART)
 PERMISSIONS = [
     # wcmatch has no per-rule ignorecase here, so the answer key's name is spelled in every letter case.
     FilesystemPermission(operations=["read", "write"], mode="deny",

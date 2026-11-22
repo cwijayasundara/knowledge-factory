@@ -26,6 +26,8 @@ and may file a flag about it, but its tools refuse to write it.
   reach the model only inside tool results, never in a system prompt.
 - Every new or changed claim cites a raw source id read in the same run; without one the decision is
   ESCALATE. Contradicting human-reviewed content is ESCALATE unless raw evidence is authoritative and newer.
+- The raw dir must not contain hard links to answer-key files: path checks (names, case folds,
+  symlink targets) cannot detect a hard link.
 - An ontology-shaped need (for example an uncovered error template) is ESCALATE with the need in the
   rationale; the curator never writes Turtle.
 

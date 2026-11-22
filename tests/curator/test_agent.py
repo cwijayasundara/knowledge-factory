@@ -2,6 +2,7 @@ import json
 import os
 
 import pytest
+import wcmatch.glob as wcglob
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from kf.cli import main
@@ -135,6 +136,10 @@ def test_answer_key_unreadable_in_any_case_or_via_symlink(repo, queue, raw_with_
         call("read_file", file_path="/raw/_ANSWERS/hero.json"),
         call("read_file", file_path="/raw/wiki/link.json"),
         call("grep", pattern="SECRET", path="/raw/"),
+        call("read_file", file_path="/raw/_answer\u017f/hero.json"),   # long s: macOS folds it to s
+        call("grep", pattern="SECRET", path="/raw/_answer\u017f/"),
+        call("glob", pattern="*", path="/raw/_answer\u017f/"),
+        call("ls", path="/raw/_answer\u017f/"),
         say("done"),
     ])
     run_curation(repo=repo, queue=queue, raw_dir=raw_with_late_key, model=model, run_id="r1")
@@ -143,7 +148,22 @@ def test_answer_key_unreadable_in_any_case_or_via_symlink(repo, queue, raw_with_
     assert texts[1] == "error: WriteDenied: wiki/link.json: denied"
     for t in texts[2:5]:
         assert t.startswith("Error: permission denied for read on /raw/"), t
+    assert texts[5] == "No matches found"  # grep over /raw/ skips the key
+    assert texts[6] == "Error: permission denied for read on /raw/_answer\u017f/hero.json"
+    assert texts[7:10] == ["Error: permission denied for read on /raw/_answer\u017f"] * 3  # grep, glob, ls
     assert not any("SECRET-KEY" in t for t in texts)
+
+
+def test_answer_key_deny_pattern_covers_every_case_fold():
+    rule = agent_mod.PERMISSIONS[0].paths[0]
+    for cp in range(0x10000):
+        c = chr(cp)
+        if 0xD800 <= cp <= 0xDFFF or c.casefold() not in set("answers"):
+            continue
+        for i, ch in enumerate("_answers"):
+            if ch == c.casefold():
+                name = "_answers"[:i] + c + "_answers"[i + 1:]
+                assert wcglob.globmatch(f"/raw/{name}", rule, flags=wcglob.BRACE | wcglob.GLOBSTAR), name
 
 
 @pytest.mark.parametrize("make", ["child", "upper", "link"])
