@@ -219,9 +219,10 @@ class CuratorTools:
     def _set_flag(self, flag_id: int, status: FlagStatus, resolution: dict | None = None) -> None:
         move_flag(self.queue, flag_id, status, resolution)
 
-    def update_flag_status(self, flag_id: int, status: str, reason: str) -> str:
+    def update_flag_status(self, flag_id: int, status: str, reason: str, duplicate_of: int | None = None) -> str:
         """Stage 2 triage: mark a flag picked in this run held (insufficient evidence), duplicate or
-        declined (noise), with a reason."""
+        declined (noise), with a reason. A duplicate names duplicate_of, the flag of this run that
+        stays live and carries the cluster (never one already duplicate or declined)."""
         if flag_id not in self.flags_in:
             raise CuratorError(f"flag {flag_id} was not picked in this run")
         try:
@@ -230,7 +231,16 @@ class CuratorTools:
             raise CuratorError(str(e)) from e
         if st not in _CURATOR_SETS:
             raise CuratorError(f"the curator may set only {sorted(s.value for s in _CURATOR_SETS)}")
-        self._set_flag(flag_id, st, {"reason": reason, "run_id": self.run_id})
+        res = {"reason": reason, "run_id": self.run_id}
+        if st is FlagStatus.duplicate:
+            rep = duplicate_of
+            if rep is None or rep == flag_id or rep not in self.flags_in:
+                raise CuratorError("a duplicate needs duplicate_of: another flag picked in this run that stays live")
+            if get_flag(self.queue, rep).status in (FlagStatus.duplicate, FlagStatus.declined):
+                raise CuratorError(f"flag {rep} is itself {get_flag(self.queue, rep).status.value}: "
+                                   "pick the cluster's live representative")
+            res["duplicate_of"] = rep
+        self._set_flag(flag_id, st, res)
         return f"flag {flag_id}: {st.value}"
 
     # ---- stage 3-4: locate and re-derive ------------------------------------
@@ -329,8 +339,14 @@ class CuratorTools:
                          confidence=confidence, tier=self._tier(target, op, cited, confidence), flags=flag_ids)
         except ValidationError as e:
             raise CuratorError(str(e)) from e
-        self.decisions.append(d)
-        for fid in flag_ids:
+        prior = next((i for i, p in enumerate(self.decisions) if p.target == d.target), None)
+        if prior is None:
+            self.decisions.append(d)
+        else:  # a re-decision on one target replaces the earlier one; its flags stay answered
+            merged = list(dict.fromkeys([*self.decisions[prior].flags, *d.flags]))
+            d = d.model_copy(update={"flags": merged})
+            self.decisions[prior] = d
+        for fid in d.flags:
             if d.op in WRITE_OPS:
                 self._set_flag(fid, FlagStatus.in_review)
             elif get_flag(self.queue, fid).status is not FlagStatus.in_review:

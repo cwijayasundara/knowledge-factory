@@ -169,3 +169,29 @@ def test_save_is_safe_under_parallel_tool_calls(tools):
     with ThreadPoolExecutor(8) as ex:
         list(ex.map(hammer, range(8)))
     assert json.loads(tools.record_path.read_text())["run_id"] == tools.run_id
+
+
+def test_redeciding_a_target_keeps_one_decision_with_all_flags(tools, queue):
+    tools.list_flags()
+    tools.raw_read("wiki/refunds.md")
+    tools.decide("domain/refund.md", "ADD", "first", ["wiki/refunds.md"], "medium", [1])
+    tools.decide("domain/refund.md", "ADD", "second, refined", ["wiki/refunds.md"], "medium", [1])
+    assert [d.target for d in tools.decisions] == ["domain/refund.md"]
+    assert tools.decisions[0].rationale == "second, refined"
+    assert tools.decisions[0].flags == [1]
+
+
+def test_duplicate_needs_a_live_representative(tools, queue):
+    from kf.flags.models import FlagIn
+
+    queue.add(FlagIn(kind="missing", summary="refund definition absent", target="domain/refund.md"),
+              agent_id="autorca", run_id="e2", scenario="hero")
+    tools.list_flags()
+    with pytest.raises(CuratorError):  # no representative named
+        tools.update_flag_status(1, "duplicate", "same")
+    with pytest.raises(CuratorError):  # itself
+        tools.update_flag_status(1, "duplicate", "same", duplicate_of=1)
+    tools.update_flag_status(1, "duplicate", "same as 2", duplicate_of=2)
+    with pytest.raises(CuratorError):  # the representative must not be a duplicate: a cluster keeps one live flag
+        tools.update_flag_status(2, "duplicate", "same as 1", duplicate_of=1)
+    assert queue.list()[1].status is FlagStatus.triaged

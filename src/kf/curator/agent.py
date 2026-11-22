@@ -67,7 +67,7 @@ CURATOR_PROMPT = """You are the knowledge factory's curator. You maintain an OKF
 (domain, data_access) and SKILL.md skills on a git branch that a person reviews before it merges.
 
 Work in stage order: 1 collect (list_flags, and list_trails when offered; the ingest subagent can summarise flags and raw sources), \
-2 triage (cluster duplicates, update_flag_status held/duplicate/declined with a reason), 3 locate \
+2 triage (cluster duplicates: keep one live representative flag per cluster and mark the others duplicate with duplicate_of=that flag; held/declined with a reason), 3 locate \
 (kb_read index.md first, then kb_grep/kb_read), 4 re-derive every claim from raw sources (raw_read), \
 5 reconcile (decide ADD/UPDATE/DEPRECATE/NOOP/ESCALATE per target, citing the raw source ids you read), \
 6 write (kb_write/kb_edit, then regen_index), 7 validate (run_validator; fix every issue), 8 finish \
