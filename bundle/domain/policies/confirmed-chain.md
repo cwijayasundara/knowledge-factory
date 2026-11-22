@@ -1,7 +1,7 @@
 ---
 type: Policy
 title: "Policy: confirming a root cause"
-description: "A correct top-1 chain is confirmed only after a person approves it."
+description: "A leading causal chain is confirmed only after a person approves it."
 x-kf-kind: domain
 x-kf-owner: team:incident-management
 x-kf-review: approved
@@ -20,6 +20,6 @@ verified:
 ---
 # Policy: confirming a root cause
 
-A causal chain is confirmed when it is top-1 correct and a person approved it. Correct is not enough: the approval stands in for the ground truth a real incident would not have. Withdrawing an approval withdraws the learned pattern built from it.[^architecture]
+A causal chain is confirmed when it is the leading explanation, it is right, and a person approved it. Being right is not enough: the approval stands in for the ground truth a real incident would not have. Withdrawing an approval withdraws the learned pattern built from it.[^architecture]
 
 [^architecture]: e2ekg architecture, flywheel.

@@ -29,7 +29,7 @@ def _all_concepts(bundle: Path) -> list[Concept]:
     out = []
     for f in sorted(Path(bundle).rglob("*.md")):
         rel = f.relative_to(bundle).as_posix()
-        if rel == "index.md" or rel.endswith("/index.md"):
+        if Path(rel).name in ("index.md", "log.md"):  # the index and the curator's run log are not concepts
             continue
         try:
             c = load_concept(f)
@@ -169,6 +169,8 @@ def snapshot(bundle: Path, dest: Path, *, commit: str) -> Path:
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     out = dest / sha
+    if out.is_dir():  # frozen by sha: reuse it, a concurrent eval may be reading it
+        return out
     tmp = Path(tempfile.mkdtemp(prefix=".snap-", dir=dest))
     try:
         proc = subprocess.run(
@@ -178,8 +180,6 @@ def snapshot(bundle: Path, dest: Path, *, commit: str) -> Path:
             raise ValueError(f"git archive failed for {commit!r}: {proc.stderr.decode(errors='replace').strip()}")
         with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tar:
             tar.extractall(tmp, filter="data")
-        if out.exists():
-            shutil.rmtree(out)
         tmp.rename(out)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

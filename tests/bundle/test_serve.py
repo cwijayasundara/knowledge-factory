@@ -160,7 +160,7 @@ def test_snapshot_ref_name_yields_sha_dir(tmp_path):
     snap = snapshot(b, tmp_path / "snaps", commit="HEAD")
     assert snap.name == sha
     assert (snap / "domain/x.md").exists()
-    assert snapshot(b, tmp_path / "snaps", commit=sha) == snap  # re-snapshot replaces cleanly
+    assert snapshot(b, tmp_path / "snaps", commit=sha) == snap  # a second snapshot of the same sha reuses it
 
 
 def test_snapshot_failure_leaves_no_partial_dir(tmp_path):
@@ -171,3 +171,19 @@ def test_snapshot_failure_leaves_no_partial_dir(tmp_path):
         snapshot(b, dest, commit="deadbeef" * 5)
     assert [p.name for p in dest.iterdir()] == [sha]  # no partial or temp dirs; good snapshot untouched
     assert (snap / "domain/x.md").exists()
+
+
+def test_log_md_is_not_served_as_a_concept(tmp_path):
+    put(tmp_path, "log.md", "", "# Log\n\n- curate-1 added domain/x.md\n")
+    put(tmp_path, "domain/log.md", "", "# Log\n")
+    put(tmp_path, "domain/x.md")
+    assert [c.path for c in current_concepts(tmp_path, now=NOW)] == ["domain/x.md"]
+    assert kb_search(tmp_path, "curate", now=NOW) == []
+
+
+def test_snapshot_reuses_an_existing_snapshot(tmp_path):
+    b, sha = _repo(tmp_path)
+    snap = snapshot(b, tmp_path / "snaps", commit=sha)
+    (snap / "in-use.txt").write_text("a concurrent eval reads this snapshot")
+    assert snapshot(b, tmp_path / "snaps", commit=sha) == snap
+    assert (snap / "in-use.txt").is_file()  # not deleted and rebuilt under a running eval
