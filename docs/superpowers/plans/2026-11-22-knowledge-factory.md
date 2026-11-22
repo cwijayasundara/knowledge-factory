@@ -18,7 +18,7 @@
 - Curator never writes a `verified` entry, never deletes (deprecate with `superseded_by`), never writes `raw/`, `bundle/computations/`, `kf-profile.yaml`, tier rules.
 - Nothing in `kf` or its permissions may reference `data/raw/_answers` (anti-goal A1).
 - Flags, traces, raw snapshots are untrusted data; never placed in a system prompt.
-- Tiers 0-3 as in spec 5.3. Eval gate defaults: 3 runs per arm per scenario; a Tier 1+ change fails if held-out top1 drops by more than one run's worth, or trap rate / control false positives rise. G2 passes at +2 scenario-runs top1 with no safety metric rising.
+- Tiers 0-3 as in spec 5.3. Eval gate defaults: 3 runs per arm per scenario; a Tier 1+ change fails if top1 on the gate scenarios (the curation seeds, `kf eval gate`; never the held-out seeds) drops by more than one run's worth, or trap rate / control false positives rise. G2 passes at +2 scenario-runs top1 over the starved arm, beating the seed-only control (graph_kb on the pristine seed bundle), with no safety metric rising.
 - Approver kind (`person`|`scripted`) recorded on every approval; scripted allowed only on runs marked `--test-run`, never counted toward G2.
 - Tests that call an LLM are marked `live` and excluded by default; other tests use a scripted fake chat model.
 - Commit messages end with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.

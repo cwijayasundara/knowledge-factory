@@ -183,7 +183,11 @@ def test_cli_approve_and_scripted_refusal(repo, q, tmp_path, capsys):
     assert main([*base, "--by", "alice"]) == 2  # self-asserted gate.passed is ignored
     write_run(repo, scores={"base": dict(top1=5, runs=9, trap=0, control_fp=0), "head": dict(top1=1, runs=9, trap=0, control_fp=0)})
     assert main([*base, "--by", "alice"]) == 2  # regression fails the gate
-    write_run(repo, scores={"base": dict(top1=5, runs=9, trap=0, control_fp=0), "head": dict(top1=5, runs=9, trap=0, control_fp=0)})
+    same = {"base": dict(top1=5, runs=9, trap=0, control_fp=0), "head": dict(top1=5, runs=9, trap=0, control_fp=0)}
+    write_run(repo, scores=same)
+    assert main([*base, "--by", "alice"]) == 2  # scores without kf eval gate provenance are refused
+    write_run(repo, scores=same, gate={"split": "curation", "base_commit": _git(repo, "rev-parse", "main"),
+                                       "head_commit": _git(repo, "rev-parse", "kf/run-1")})
     assert main([*base, "--kind", "scripted"]) == 2
     assert main(["review", "list", "--repo", str(repo)]) == 0
     assert "kf/run-1" in capsys.readouterr().out

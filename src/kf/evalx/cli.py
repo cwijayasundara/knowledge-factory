@@ -17,7 +17,21 @@ from kf.flags.queue import FlagQueue
 
 
 def run(args) -> int:
-    return {"run": _run, "g2": _g2, "metrics": _metrics}[args.sub](args)
+    return {"run": _run, "g2": _g2, "gate": _gate, "metrics": _metrics}[args.sub](args)
+
+
+def _gate(args) -> int:
+    from kf.evalx import gate_run
+
+    try:
+        result = gate_run.run_gate(Path(args.repo), args.branch, scenarios=args.scenarios.split(","), runs=args.runs,
+                                   state_dir=Path(args.state_dir), data_base=Path(args.data_base),
+                                   removal_list=Path(args.list), now=args.now)
+    except (gate_run.GateError, SealRefused, RuntimeError, ValueError) as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 2
+    print(f"gate {'PASS' if result.passed else 'FAIL'} {args.branch}" + "".join(f"; {r}" for r in result.reasons))
+    return 0 if result.passed else 1
 
 
 def _run(args) -> int:

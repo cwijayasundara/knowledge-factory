@@ -1,14 +1,18 @@
 """Phase 0 end to end, scripted: no network model, no e2ekg data.
 
 Two agent flags -> kf curate (scripted curator) -> branch kf/<run_id> -> kf ci on the branch ->
-kf review approve --kind scripted --test-run merges -> flags resolved -> a second curate is a NOOP.
+kf eval gate (scripted eval) records the gate -> kf review approve --kind scripted --test-run merges ->
+flags resolved -> a second curate is a NOOP.
 """
+
+import os
 
 import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import polars as pl
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -18,6 +22,7 @@ from kf.bundle.okf import load_concept, parse_concept
 from kf.bundle.serve import current_concepts
 from kf.cli import main
 from kf.curator.agent import run_curation
+from kf.evalx import gate_run
 from kf.flags.models import FlagStatus
 from kf.flags.queue import FlagQueue
 
@@ -42,7 +47,10 @@ def okf_validator():
     if not VALIDATOR.is_file():
         subprocess.run(["bash", str(ROOT / "scripts" / "fetch_okf.sh")], capture_output=True)
     if not VALIDATOR.is_file():
-        pytest.skip(f"OKF validator missing at {VALIDATOR} and scripts/fetch_okf.sh could not clone it")
+        msg = f"OKF validator missing at {VALIDATOR} and scripts/fetch_okf.sh could not clone it"
+        if os.environ.get("CI"):
+            pytest.fail(msg)  # in CI a skipped end-to-end test would hide a broken pipeline
+        pytest.skip(msg)
 
 
 @pytest.fixture
@@ -79,7 +87,17 @@ def judge() -> ScriptedChatModel:
     return ScriptedChatModel(model_name="scripted-judge", script=[verdict])
 
 
-def test_phase0_scripted_end_to_end(world, tmp_path):
+def scripted_eval(**kw):
+    """Stands in for run_eval in kf eval gate: equal scores on both sides (no regression)."""
+    d = Path(kw["run_dir"])
+    d.mkdir(parents=True)
+    pl.DataFrame([dict(scenario="hero", arm="graph_kb", run=i, top1=i < 2, trap=False, control_false_positive=False)
+                  for i in range(3)]).write_parquet(d / "results.parquet")
+    (d / "kf_run.json").write_text(json.dumps({"data_root": str(kw["data_root"])}))
+    return d
+
+
+def test_phase0_scripted_end_to_end(world, tmp_path, monkeypatch):
     repo, raw, queue = world
 
     # 1. an agent files two flags through its kf_flag tool
@@ -99,16 +117,17 @@ def test_phase0_scripted_end_to_end(world, tmp_path):
     on_branch = parse_concept(CONCEPT, git(repo, "show", f"kf/e2e-1:bundle/{CONCEPT}"))
     assert on_branch.front["x-kf-review"] == "proposed" and "verified" not in on_branch.front
 
-    # 3. kf ci passes on the branch (the tier-2 gate reads the scores the eval step recorded)
+    # 3. kf ci passes on the branch; kf eval gate records the gate in the run record
     wt = tmp_path / "branch-wt"
     git(repo, "worktree", "add", "-q", "--detach", str(wt), "kf/e2e-1")
     assert main(["ci", str(wt / "bundle")]) == 0
     assert CONCEPT not in [c.path for c in current_concepts(wt / "bundle", now=datetime.now(UTC))]  # a proposed concept is not served
     git(repo, "worktree", "remove", "--force", str(wt))
-    record = repo / "state" / "runs" / "e2e-1.json"
-    rec = json.loads(record.read_text())
-    same = dict(top1=5, runs=9, trap=0, control_fp=0)
-    record.write_text(json.dumps({**rec, "scores": {"base": same, "head": same}}))
+    monkeypatch.setattr(gate_run, "run_eval", scripted_eval)
+    assert main(["eval", "gate", "--branch", "kf/e2e-1", "--repo", str(repo), "--scenarios", "hero",
+                 "--state-dir", str(tmp_path / "evals-state"), "--data-base", str(tmp_path)]) == 0
+    rec = json.loads((repo / "state" / "runs" / "e2e-1.json").read_text())
+    assert rec["gate"]["split"] == "curation" and rec["scores"]["base"] == rec["scores"]["head"]
 
     # 4. a scripted approval on a --test-run merges, stamps verified and resolves the flags
     assert main(["review", "approve", "--repo", str(repo), "--branch", "kf/e2e-1", "--by", "scripted-test",

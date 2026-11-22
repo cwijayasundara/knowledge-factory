@@ -1,4 +1,6 @@
-"""Eval gate (spec 5.3): a Tier 1+ change must not regress held-out scores."""
+"""Eval gate (spec 5.3, 9b): a Tier 1+ change must not regress the gate scenarios' scores. The gate
+scenarios are the CURATION seeds (`kf eval gate`, kf.evalx.gate_run); held-out seeds are used only
+for G2, since choosing merges by held-out scores would be selection on the test set (anti-goal A3)."""
 
 from __future__ import annotations
 

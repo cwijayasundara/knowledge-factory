@@ -7,7 +7,6 @@ from kf.bundle.ci import run_ci
 from kf.evalx import removal
 from kf.flags.models import FlagStatus
 from kf.flags.queue import FlagQueue
-from kf.review.gate import GateResult, Scores, eval_gate
 
 DEFAULT_DB = "state/flags.db"
 
@@ -74,6 +73,16 @@ def main(argv: list[str] | None = None) -> int:
     eg.add_argument("--report", default=None, help="default reports/g2-<date>.md")
     eg.add_argument("--list", default=str(removal.default_list()))
     eg.add_argument("--seal-file", default=str(removal.DEFAULT_SEAL))
+    gt = ev.add_parser("gate", help="eval gate for a curator branch: graph_kb (starved) on the curation seeds, "
+                                     "main vs the branch, scores into state/runs/<run_id>.json")
+    gt.add_argument("--branch", required=True, help="curator branch kf/<run_id>")
+    gt.add_argument("--repo", default=str(removal.REPO_ROOT))
+    gt.add_argument("--scenarios", default="all", help="comma list of e2ekg scenario names, or all")
+    gt.add_argument("--runs", type=int, default=3, help="runs per scenario and side")
+    gt.add_argument("--state-dir", default=str(removal.REPO_ROOT / "state"))
+    gt.add_argument("--data-base", default=str(removal.REPO_ROOT), help="directory holding data_curation/")
+    gt.add_argument("--list", default=str(removal.default_list()), help="removal list (both sides are starved)")
+    gt.add_argument("--now", help="KF_NOW for both sides (default: the branch tip's author date)")
     em = ev.add_parser("metrics", help="curator and corpus metrics as JSON")
     em.add_argument("--state-dir", default="state")
     em.add_argument("--db", default=None, help="flag queue (default <state-dir>/flags.db)")
@@ -157,14 +166,6 @@ def _curate(args) -> int:
     return 0 if run.status == "done" else 1
 
 
-def _gate_from_scores(scores) -> GateResult | None:
-    """Compute the gate from recorded scores; missing or malformed scores mean no gate result."""
-    try:
-        return eval_gate(Scores(**scores["base"]), Scores(**scores["head"]))
-    except (KeyError, TypeError):
-        return None
-
-
 def _review(args) -> int:
     from datetime import UTC, datetime
 
@@ -193,7 +194,9 @@ def _review(args) -> int:
         return 0
     now = datetime.now(UTC)
     record = rv.read_run_record(repo, args.branch)
-    gate = _gate_from_scores(record.get("scores"))
+    from kf.evalx.gate_run import gate_from_record
+
+    gate = gate_from_record(repo, args.branch, record)
     second = rv.Approval(args.second_by, "person", now) if args.second_by else None
     try:
         res = rv.approve_and_merge(
