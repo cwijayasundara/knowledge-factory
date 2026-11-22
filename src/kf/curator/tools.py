@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from collections import deque
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -148,6 +149,7 @@ class CuratorTools:
         self.decisions: list[Decision] = []
         self.sources_read: set[str] = set()
         self.profile = Profile.load(DEFAULT_PROFILE)
+        self._save_lock = threading.Lock()  # the agent runs tool calls in parallel threads
         self.record: dict = {"run_id": self.run_id, "status": "running", "branch": None, "worktree": None,
                              "started_at": _now(), "decisions": [], "flags_in": [], "flags_out": {},
                              "judge_ok": None}
@@ -159,13 +161,14 @@ class CuratorTools:
         return self.state_dir / "runs" / f"{self.run_id}.json"
 
     def save(self, **fields) -> None:
-        self.record.update(fields)
-        self.record["decisions"] = [d.model_dump(mode="json") for d in self.decisions]
-        self.record["flags_in"] = list(self.flags_in)
-        self.record_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.record_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self.record, indent=2))
-        tmp.replace(self.record_path)
+        with self._save_lock:
+            self.record.update(fields)
+            self.record["decisions"] = [d.model_dump(mode="json") for d in self.decisions]
+            self.record["flags_in"] = list(self.flags_in)
+            self.record_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.record_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self.record, indent=2))
+            tmp.replace(self.record_path)
 
     # ---- paths --------------------------------------------------------------
 

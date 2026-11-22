@@ -156,3 +156,16 @@ def test_wrapped_tool_returns_denial_as_text(tools):
     lc = build_curator_tools(tools)
     out = lc["kb_write"].invoke({"path": "../raw/x.json", "content": REFUND})
     assert out.startswith("error:")
+
+
+def test_save_is_safe_under_parallel_tool_calls(tools):
+    # the agent runs tool calls in parallel threads; two saves must not race on one temp file
+    from concurrent.futures import ThreadPoolExecutor
+
+    def hammer(_):
+        for _i in range(100):
+            tools.save()
+
+    with ThreadPoolExecutor(8) as ex:
+        list(ex.map(hammer, range(8)))
+    assert json.loads(tools.record_path.read_text())["run_id"] == tools.run_id
