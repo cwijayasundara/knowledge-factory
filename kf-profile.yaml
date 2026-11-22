@@ -1,0 +1,17 @@
+# Tier 3: humans only. The curator may flag changes here but never edit it.
+okf_version: "0.3"
+enums:
+  x-kf-kind: [domain, data_access, skill_card]
+  x-kf-review: [proposed, in_review, approved, rejected]
+  x-kf-risk: [0, 1, 2, 3]
+  x-kf-confidence: [low, medium, high]
+kinds:
+  domain:
+    required: [x-kf-kind, x-kf-owner, x-kf-review, x-kf-confidence]
+    stale_after_days: 180
+  data_access:
+    required: [x-kf-kind, x-kf-owner, x-kf-review, x-kf-risk, x-kf-confidence]
+    stale_after_days: 90
+  skill_card:
+    required: [x-kf-kind, x-kf-owner, x-kf-review, x-kf-risk]
+    stale_after_days: 120
