@@ -1,0 +1,216 @@
+From ef8a31c380f25f09e7b9995df5aeceb811613a64 Mon Sep 17 00:00:00 2001
+From: kf integration <kf@localhost>
+Date: Sun, 22 Nov 2026 07:47:21 +0000
+Subject: [PATCH 2/2] feat(evals): opt-in graph_kb arm (graph plus the
+ knowledge-factory tools)
+
+graph_kb runs the graph arm with kf_flag / kb_search / kb_read from
+kf.agent_tools, imported only for this arm. It reads the flag queue dir
+from KF_STATE_DIR (flags.db) and the frozen bundle from KF_BUNDLE_SNAPSHOT
+and refuses to run when either is unset. Flags carry run_id
+<scenario>__graph_kb__<run> and agent_id autorca.
+---
+ src/e2ekg/evals/arms.py    |  9 ++++--
+ src/e2ekg/evals/run.py     | 42 +++++++++++++++++++++----
+ tests/evals/test_kb_arm.py | 64 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 107 insertions(+), 8 deletions(-)
+ create mode 100644 tests/evals/test_kb_arm.py
+
+diff --git a/src/e2ekg/evals/arms.py b/src/e2ekg/evals/arms.py
+index abf99f0..2d77032 100644
+--- a/src/e2ekg/evals/arms.py
++++ b/src/e2ekg/evals/arms.py
+@@ -2,9 +2,14 @@
+ 
+ `graph_fast` (the fast path, e2ekg.agent.fastpath) is opt-in: `all` keeps the Deep Path arms
+ the evals have always measured (A.2 — do not silently swap what the evals measure), so it is
+-scored only when named explicitly."""
++scored only when named explicitly.
++
++`graph_kb` (KB_ARM) is the graph arm plus the knowledge factory's kf_flag / kb_search / kb_read,
++over the flag queue in $KF_STATE_DIR and the frozen bundle in $KF_BUNDLE_SNAPSHOT; opt-in the
++same way."""
+ LLM_ARMS = ("graph", "graph_no_evidence_tool", "raw_only")
+ FAST_ARM = "graph_fast"
++KB_ARM = ("graph_kb",)
+ ENGINE_ARMS = ("engine_top", "engine_no_topology", "engine_no_explain_away")
+-ARMS = (*LLM_ARMS, FAST_ARM, *ENGINE_ARMS)
++ARMS = (*LLM_ARMS, FAST_ARM, *KB_ARM, *ENGINE_ARMS)
+ DEFAULT_ARMS = (*LLM_ARMS, *ENGINE_ARMS)
+diff --git a/src/e2ekg/evals/run.py b/src/e2ekg/evals/run.py
+index 08d4d5b..9551872 100644
+--- a/src/e2ekg/evals/run.py
++++ b/src/e2ekg/evals/run.py
+@@ -7,6 +7,8 @@ Arms (all scored by the same `score()`):
+   graph_fast              the fast path (A.2): prefetch + one-shot specialists + synthesis;
+                           opt-in (not in `all`), escalates to the Deep Path when weak
+   graph_no_evidence_tool  the same agent without that tool
++  graph_kb                graph plus the knowledge factory's kf_flag / kb_search / kb_read;
++                          opt-in, needs $KF_STATE_DIR (flags.db) and $KF_BUNDLE_SNAPSHOT
+   raw_only                one agent over the as-of raw files, no graph (compare it with
+                           graph_no_evidence_tool, not graph)
+   engine_top              no LLM: the correlation engine's chains on the as-of store, in order
+@@ -42,7 +44,7 @@ from e2ekg.agent.report import Hypothesis, RCAReport
+ from e2ekg.agent.tools import make_tools
+ from e2ekg.agent.trail import Trail
+ from e2ekg.correlate.engine import MIN_CONFIDENCE, correlate
+-from e2ekg.evals.arms import ARMS, DEFAULT_ARMS, ENGINE_ARMS, FAST_ARM, LLM_ARMS
++from e2ekg.evals.arms import ARMS, DEFAULT_ARMS, ENGINE_ARMS, FAST_ARM, KB_ARM, LLM_ARMS
+ from e2ekg.evals.rawview import ensure_raw_view
+ from e2ekg.evals.raw_only import run_raw_only
+ from e2ekg.evals.score import evidence_checker, load_answers, score, scenario_change
+@@ -71,7 +73,7 @@ class RunSpec:
+ 
+     @property
+     def llm(self) -> bool:
+-        return self.arm in (*LLM_ARMS, FAST_ARM)
++        return self.arm in (*LLM_ARMS, FAST_ARM, *KB_ARM)
+ 
+ 
+ @dataclass(frozen=True)
+@@ -124,7 +126,7 @@ def make_plan(scenarios: list[str], runs: int, arms: list[str]) -> list[RunSpec]
+     holds whole rounds over the scenarios."""
+     plan = [RunSpec(s, a, 0) for s in scenarios for a in arms if a in ENGINE_ARMS]
+     plan += [RunSpec(s, a, r) for r in range(runs) for s in scenarios for a in arms
+-             if a in (*LLM_ARMS, FAST_ARM)]
++             if a in (*LLM_ARMS, FAST_ARM, *KB_ARM)]
+     return plan
+ 
+ 
+@@ -185,8 +187,32 @@ def run_engine(case: Case, arm: str) -> dict:
+                         for c in chains[:RANKING_SHOWN]]}
+ 
+ 
++KF_ENV = ("KF_STATE_DIR", "KF_BUNDLE_SNAPSHOT")
++
++
++def kf_env() -> tuple[Path, Path]:
++    """(the knowledge factory's state dir, its frozen bundle snapshot) for the graph_kb arm."""
++    missing = [k for k in KF_ENV if not os.environ.get(k)]
++    if missing:
++        raise RuntimeError(f"the {KB_ARM[0]} arm needs {' and '.join(missing)} set: "
++                           "KF_STATE_DIR holds the flag queue (flags.db), KF_BUNDLE_SNAPSHOT a "
++                           "frozen bundle snapshot directory")
++    state, snapshot = (Path(os.environ[k]) for k in KF_ENV)
++    if not snapshot.is_dir():
++        raise RuntimeError(f"KF_BUNDLE_SNAPSHOT is not a directory: {snapshot}")
++    return state, snapshot
++
++
++def kf_tools(case: Case, run_id: str) -> dict:
++    """kf_flag / kb_search / kb_read for one graph_kb run (kf is imported only here)."""
++    from kf.agent_tools import make_kf_tools
++    state, snapshot = kf_env()
++    return make_kf_tools(queue_path=state / "flags.db", bundle_snapshot=snapshot, run_id=run_id,
++                         agent_id="autorca", scenario=case.scenario)
++
++
+ def run_agent(case: Case, arm: str, evals_dir: Path,
+-              model: str | BaseChatModel | None) -> dict:
++              model: str | BaseChatModel | None, run_id: str | None = None) -> dict:
+     log, kw = RunLog(), ({"model": model} if model else {})
+     if arm == "raw_only":
+         raw = case.root / "raw" / case.scenario
+@@ -202,8 +228,10 @@ def run_agent(case: Case, arm: str, evals_dir: Path,
+                               trail=trail, **kw)
+         escalated = any(s["tool"] == "escalate" for s in trail.steps)
+     else:
++        if arm in KB_ARM:
++            kw["kf"] = kf_tools(case, run_id)
+         report = run_rca(case.alert_id, case.scenario, root=case.root, callbacks=[log],
+-                         with_evidence_tool=arm == "graph", trail=trail, **kw)
++                         with_evidence_tool=arm in ("graph", *KB_ARM), trail=trail, **kw)
+     return {"report": report.model_dump(), "escalated": escalated, **log.tokens(),
+             "model_calls": log.model_calls, "tools": log.tools, "trail": trail.dump()}
+ 
+@@ -213,7 +241,7 @@ def run_one(spec: RunSpec, *, root: Path, evals_dir: Path,
+     case, t0 = case_for(root, spec.scenario), time.perf_counter()
+     started = datetime.now(UTC)
+     body = (run_engine(case, spec.arm) if not spec.llm
+-            else run_agent(case, spec.arm, evals_dir, model))
++            else run_agent(case, spec.arm, evals_dir, model, run_id=spec.name))
+     return {"scenario": spec.scenario, "arm": spec.arm, "run": spec.run, "alert": case.alert_id,
+             "as_of": case.as_of.isoformat(), "started_utc": started.isoformat(),
+             "seconds": round(time.perf_counter() - t0, 1), **body}
+@@ -285,6 +313,8 @@ def run_evals(scenarios: list[str], runs: int, arms: list[str], *, root: Path =
+     <root>/evals), then score every finished run. `do` replaces the real runner in tests."""
+     root = Path(root)
+     evals_dir = root / "evals"
++    if do is None and set(arms) & set(KB_ARM):
++        kf_env()                                   # refuse before anything is written
+     run_dir = Path(run_dir) if run_dir else new_run_dir(evals_dir)
+     plan = make_plan(scenarios, runs, arms)
+     run_dir.mkdir(parents=True, exist_ok=True)
+diff --git a/tests/evals/test_kb_arm.py b/tests/evals/test_kb_arm.py
+new file mode 100644
+index 0000000..4bab40c
+--- /dev/null
++++ b/tests/evals/test_kb_arm.py
+@@ -0,0 +1,64 @@
++"""The opt-in graph_kb arm: the graph arm plus the knowledge factory's tools, over the flag queue
++in $KF_STATE_DIR and the frozen bundle in $KF_BUNDLE_SNAPSHOT. No network."""
++import pytest
++from agent_helpers import fake_tool_model
++from kf.flags.queue import FlagQueue
++from langchain_core.messages import AIMessage, ToolMessage
++
++from e2ekg.evals.arms import KB_ARM
++from e2ekg.evals.run import RunSpec, make_plan, resolve_arms, run_evals, run_one
++
++KF = {"kf_flag", "kb_search", "kb_read"}
++REPORT = {"verdict": "inconclusive", "hypotheses": [], "summary": "stub"}
++
++
++@pytest.fixture
++def kf_env(tmp_path, monkeypatch):
++    bundle = tmp_path / "snapshot"
++    (bundle / "domain").mkdir(parents=True)
++    (bundle / "domain" / "tms.md").write_text("---\ntitle: TMS\ndescription: d\n---\nTMS is tms-api\n")
++    monkeypatch.setenv("KF_STATE_DIR", str(tmp_path / "state"))
++    monkeypatch.setenv("KF_BUNDLE_SNAPSHOT", str(bundle))
++    return tmp_path
++
++
++def test_graph_kb_is_opt_in_and_planned_as_an_llm_arm():
++    assert KB_ARM == ("graph_kb",)
++    assert "graph_kb" not in resolve_arms("all") and resolve_arms("graph_kb") == ["graph_kb"]
++    [spec] = make_plan(["hero"], 1, ["graph_kb"])
++    assert spec.name == "hero__graph_kb__0" and spec.llm
++
++
++@pytest.mark.parametrize("unset", ["KF_STATE_DIR", "KF_BUNDLE_SNAPSHOT"])
++def test_graph_kb_refuses_to_run_without_its_environment(eval_root, kf_env, monkeypatch, unset):
++    monkeypatch.delenv(unset)
++    with pytest.raises(RuntimeError, match=unset):
++        run_one(RunSpec("hero", "graph_kb", 0), root=eval_root, evals_dir=eval_root / "evals",
++                model=fake_tool_model())
++    with pytest.raises(RuntimeError, match=unset):
++        run_evals(["hero"], 1, ["graph_kb"], root=eval_root, run_dir=kf_env / "run",
++                  model=fake_tool_model(), say=lambda _: None)
++    assert not (kf_env / "run").exists()
++
++
++def test_graph_kb_is_graph_plus_the_kf_tools_and_flags_carry_the_run_name(eval_root, kf_env):
++    offered = {}
++    for arm in ("graph", "graph_kb"):
++        seen, replies = [], []
++
++        def policy(messages, bound):
++            seen.append(bound)
++            done = [m for m in messages if isinstance(m, ToolMessage)]
++            if "kf_flag" in bound and not done:
++                return AIMessage("", tool_calls=[{"name": "kf_flag", "id": "f", "args": {
++                    "kind": "missing", "summary": "no alias for TMS"}}])
++            replies.extend(m.content for m in done)
++            return AIMessage("", tool_calls=[{"name": "RCAReport", "args": REPORT, "id": "r"}])
++        run = run_one(RunSpec("hero", arm, 0), root=eval_root, evals_dir=eval_root / "evals",
++                      model=fake_tool_model(policy))
++        assert run["report"]["summary"] == "stub"
++        offered[arm] = set().union(*seen)
++    assert offered["graph_kb"] == offered["graph"] | KF
++    [flag] = FlagQueue(kf_env / "state" / "flags.db").list()
++    assert (flag.run_id, flag.agent_id, flag.scenario) == ("hero__graph_kb__0", "autorca", "hero")
++    assert any("continue" in r.lower() for r in replies)
+-- 
+2.50.1 (Apple Git-155)
+

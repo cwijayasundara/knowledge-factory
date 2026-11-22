@@ -3,7 +3,11 @@ name = "kf"
 version = "0.1.0"
 description = "Knowledge factory"
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2", "pyyaml>=6"]
+dependencies = [
+    "langchain-core>=1",
+    "pydantic>=2",
+    "pyyaml>=6",
+]
 
 [project.scripts]
 kf = "kf.cli:main"
