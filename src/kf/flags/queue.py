@@ -90,10 +90,11 @@ class FlagQueue:
                     " severity, confidence, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         datetime.now(UTC).isoformat(), agent_id, run_id, scenario,
-                        flag_in.kind.value, flag_in.summary, flag_in.target, flag_in.knowledge_type,
+                        flag_in.kind.value, flag_in.summary, flag_in.target,
+                        flag_in.knowledge_type.value if flag_in.knowledge_type else None,
                         flag_in.observed, flag_in.expected, flag_in.suggested_fix,
                         json.dumps([e.model_dump() for e in flag_in.evidence]),
-                        flag_in.workaround_used, flag_in.severity, flag_in.confidence, S.open.value,
+                        flag_in.workaround_used, flag_in.severity.value, flag_in.confidence.value, S.open.value,
                     ),
                 )
                 return self._flag(conn.execute("SELECT * FROM flags WHERE id=?", (cur.lastrowid,)).fetchone())

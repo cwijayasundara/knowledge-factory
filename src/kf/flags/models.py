@@ -5,12 +5,25 @@ from pydantic import BaseModel, Field
 
 
 class FlagKind(StrEnum):
-    stale = "stale"
     missing = "missing"
-    wrong = "wrong"
+    incorrect = "incorrect"
+    stale = "stale"
     ambiguous = "ambiguous"
     contradiction = "contradiction"
-    other = "other"
+    procedure_gap = "procedure_gap"
+
+
+class KnowledgeType(StrEnum):
+    skill = "skill"
+    domain = "domain"
+    data_access = "data_access"
+    unknown = "unknown"
+
+
+class Level(StrEnum):
+    low = "low"
+    medium = "medium"
+    high = "high"
 
 
 class FlagStatus(StrEnum):
@@ -24,8 +37,8 @@ class FlagStatus(StrEnum):
 
 
 class Evidence(BaseModel):
-    ref: str
-    excerpt: str | None = None
+    resource: str
+    excerpt: str | None = Field(default=None, max_length=1000)
 
 
 class FlagIn(BaseModel):
@@ -34,14 +47,14 @@ class FlagIn(BaseModel):
     kind: FlagKind
     summary: str = Field(max_length=500)
     target: str | None = None
-    knowledge_type: str | None = None
+    knowledge_type: KnowledgeType | None = None
     observed: str | None = None
     expected: str | None = None
     suggested_fix: str | None = None
     evidence: list[Evidence] = Field(default_factory=list)
     workaround_used: str | None = None
-    severity: str = "medium"
-    confidence: str = "medium"
+    severity: Level = Level.medium
+    confidence: Level = Level.medium
 
 
 class Flag(FlagIn):

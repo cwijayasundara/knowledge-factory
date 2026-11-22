@@ -42,11 +42,33 @@ def test_summary_over_500_rejected():
 
 def test_evidence_and_resolution_roundtrip(tmp_path):
     q = FlagQueue(tmp_path / "q.db")
-    f = _add(q, evidence=[{"ref": "raw/a.txt", "excerpt": "e"}])
-    assert q.list()[0].evidence[0].ref == "raw/a.txt"
+    f = _add(q, evidence=[{"resource": "raw/a.txt", "excerpt": "e"}])
+    assert q.list()[0].evidence[0].resource == "raw/a.txt"
     q.set_status(f.id, FlagStatus.triaged, cluster_id=3)
     g = q.set_status(f.id, FlagStatus.declined, resolution={"why": "n/a"})
     assert (g.cluster_id, g.resolution) == (3, {"why": "n/a"})
+
+
+def test_kind_enum_is_exact():
+    for k in ["missing", "incorrect", "stale", "ambiguous", "contradiction", "procedure_gap"]:
+        assert FlagIn(kind=k, summary="x").kind == k
+    for bad in ["wrong", "other"]:
+        with pytest.raises(ValidationError):
+            FlagIn(kind=bad, summary="x")
+
+
+def test_evidence_requires_resource_and_caps_excerpt():
+    with pytest.raises(ValidationError):
+        FlagIn(kind="stale", summary="x", evidence=[{"excerpt": "e"}])
+    with pytest.raises(ValidationError):
+        FlagIn(kind="stale", summary="x", evidence=[{"resource": "r", "excerpt": "e" * 1001}])
+
+
+def test_other_enums_validated():
+    FlagIn(kind="stale", summary="x", knowledge_type="skill", severity="high", confidence="low")
+    for kw in ({"knowledge_type": "other"}, {"severity": "critical"}, {"confidence": "none"}):
+        with pytest.raises(ValidationError):
+            FlagIn(kind="stale", summary="x", **kw)
 
 
 def test_list_filters_by_status(tmp_path):
