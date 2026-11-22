@@ -8,7 +8,8 @@
 #
 # Non-destructive: it never deletes data, regenerates nothing that exists (e2ekg's generator refuses a
 # non-empty output dir, so a seed already on disk is skipped), and commits only integration/removal.seal.
-# It does not write evalx/removal.yaml: that is the owner's decision (step 4 of the runbook).
+# It does not write the removal list: that is the list author's job (step 4 of the runbook). The list lives
+# outside the repo: $KF_REMOVAL_LIST or ~/.kf/removal.yaml. Sealing needs KF_LIST_AUTHOR (who wrote it).
 set -euo pipefail
 unset VIRTUAL_ENV
 
@@ -76,25 +77,29 @@ for s in ${CURATION_SEEDS//,/ }; do gen_seed data_curation "$s"; done
 step "3. Held-out data (scoring only): HELDOUT_SEEDS=$HELDOUT_SEEDS"
 for s in ${HELDOUT_SEEDS//,/ }; do gen_seed data_heldout "$s"; done
 
-step "4. Removal list: evalx/removal.yaml (written by the owner, then sealed)"
-if [[ ! -f evalx/removal.yaml ]]; then
-  echo "evalx/removal.yaml does not exist. Write it (see docs/RUNBOOK.md step 4), then run this script again." >&2
+LIST="${KF_REMOVAL_LIST:-$HOME/.kf/removal.yaml}"
+step "4. Removal list: $LIST (outside the repo; written by the list author, then sealed)"
+if [[ ! -f "$LIST" ]]; then
+  echo "$LIST does not exist. Copy evalx/removal.template.yaml there and write the items (docs/RUNBOOK.md step 4)." >&2
   [[ $PLAN == 1 ]] || exit 1
 fi
-if [[ $PLAN != 1 ]] && ! uv run python -c "import sys; from pathlib import Path; from kf.evalx.removal import RemovalList; sys.exit(0 if RemovalList.load(Path('evalx/removal.yaml')).items else 1)"; then
-  echo "evalx/removal.yaml has no items (it is still the template). Write the list first." >&2
+if [[ $PLAN != 1 ]] && ! uv run python -c "import sys; from pathlib import Path; from kf.evalx.removal import RemovalList; sys.exit(0 if RemovalList.load(Path(sys.argv[1])).items else 1)" "$LIST"; then
+  echo "$LIST has no items (it is still the template). Write the list first." >&2
   exit 1
 fi
-step "5. Seal it (refuses if the seed bundle already holds a removed text), commit the seal alone"
-run uv run kf seal
+step "5. Seal it (refuses an empty list, a list inside the repo, or one the seed bundle overlaps), commit the seal alone"
+if [[ $PLAN != 1 && -z "${KF_LIST_AUTHOR:-}" ]]; then
+  echo "Set KF_LIST_AUTHOR to the list author's id (they must not review curator changes)." >&2
+  exit 1
+fi
+run uv run kf seal --list "$LIST" --author "${KF_LIST_AUTHOR:-<list author>}"
 run bash scripts/commit_seal.sh integration/removal.seal
 
 step "6. Baseline: starved graph arm on the held-out seeds, $RUNS runs per scenario"
-run_llm uv run kf eval run --arms graph --starve --heldout --runs "$RUNS"
+run_llm uv run kf eval run --arms graph --starve --heldout --runs "$RUNS" --list "$LIST"
 
 step "7. Flag collection: graph_kb on the curation seeds (starved, same switch as the baseline)"
-run_llm uv run kf eval run --arms graph_kb --starve --runs "$RUNS"
+run_llm uv run kf eval run --arms graph_kb --starve --runs "$RUNS" --list "$LIST"
 
-echo "Later (not Phase 0): the G2 treatment run is: uv run kf eval run --arms graph_kb --starve --heldout --runs $RUNS (both G2 arms must be starved)."
-step "Stop. Phase 0 exit: flags exist (uv run kf flags list), baseline stored, seal committed."
-echo "Owner: copy the baseline's scores into state/baseline.json (see docs/RUNBOOK.md)."
+step "Stop. Phase 0 exit: flags exist (uv run kf flags list), baseline run dir under state/evals/heldout-*, seal committed."
+echo "Next: tag the seed commit (git tag kf-seed), then Phase 1 in docs/RUNBOOK.md (raw view, curate, gate, review, treatment, seed-only control, kf eval g2)."

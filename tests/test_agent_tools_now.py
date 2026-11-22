@@ -1,6 +1,14 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from kf import agent_tools
+
+
+@pytest.fixture(autouse=True)
+def _no_kf_now(monkeypatch):
+    """A KF_NOW from the caller's shell (an eval env) must not leak into these tests."""
+    monkeypatch.delenv("KF_NOW", raising=False)
 
 
 def test_utcnow_defaults_to_the_clock(monkeypatch):
