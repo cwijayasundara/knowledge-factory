@@ -69,8 +69,11 @@ class World:
         for d in data[:top1]:
             d["top1"] = True
         pl.DataFrame(data).write_parquet(p / "results.parquet")
+        private = self.tmp / "kf-home" / "runs" / p.name / "removal.yaml"  # outside the repo
         if copy is not None:
-            (p / "removal.yaml").write_text(copy)
+            private.parent.mkdir(parents=True, exist_ok=True)
+            private.write_text(copy)
+        rec.setdefault("removal_copy", str(private))
         kb = arm == "graph_kb"
         base = dict(commit=self.kb, starve=True, heldout=True, test_run=False, seal_ok=True, seal_hash=self.sha,
                     removal_sha256=self.sha, data_root=f"/x/data_heldout/seed-{seed}", scenarios=list(scenarios),
@@ -150,7 +153,9 @@ def test_g2_fails_when_kb_does_not_beat_the_seed_only_control(tmp_path, capsys):
     (dict(e2ekg_sha="f" * 40), "e2ekg commits"),
     (dict(e2ekg_sha=None), "e2ekg commits"),
     (dict(seal_hash="0" * 64), "did not run on the sealed list"),
-    (dict(copy=None), "no non-empty copy of the sealed list"),
+    (dict(copy=None), "is missing, empty or no longer matches"),
+    (dict(copy=LIST + "# edit\n"), "is missing, empty or no longer matches"),
+    (dict(removal_copy=None), "no recorded private copy"),
     (dict(started_at="2000-01-01T00:00:00+00:00"), "not before the first run"),
     (dict(snapshot="/nowhere"), "bundle snapshot missing"),
     (dict(now="2026-11-21T00:00:00+00:00"), "different clocks"),
@@ -197,7 +202,7 @@ def test_g2_cli_invalid_when_kb_runs_used_two_bundle_commits(tmp_path, capsys):
     rec = tmp_path / "k" / "kf_run.json"
     second = tmp_path / "k" / "seed-22"
     second.mkdir()
-    for f in ("results.parquet", "removal.yaml"):
+    for f in ("results.parquet",):
         (second / f).write_bytes((tmp_path / "k" / f).read_bytes())
     (second / "kf_run.json").write_text(json.dumps({**json.loads(rec.read_text()), "commit": "d" * 40}))
     _invalid(w_argv, capsys, "more than one bundle commit", tmp_path)
@@ -213,6 +218,16 @@ def test_g2_cli_invalid_when_main_got_a_direct_bundle_commit(tmp_path, capsys):
     rec = tmp_path / "k" / "kf_run.json"
     rec.write_text(json.dumps({**json.loads(rec.read_text()), "commit": later}))
     _invalid(argv, capsys, f"commit {later[:12]} is not a curator merge", tmp_path)
+
+
+def test_g2_cli_invalid_when_the_list_copy_is_inside_the_repo(tmp_path, capsys):
+    argv = _setup(tmp_path)
+    inside = tmp_path / "repo" / "state" / "evals" / "removal.yaml"
+    inside.parent.mkdir(parents=True)
+    inside.write_text(LIST)
+    rec = tmp_path / "k" / "kf_run.json"
+    rec.write_text(json.dumps({**json.loads(rec.read_text()), "removal_copy": str(inside)}))
+    _invalid(argv, capsys, "is inside the repo", tmp_path)
 
 
 def test_g2_cli_rejects_an_unstarved_starved_run(tmp_path, capsys):

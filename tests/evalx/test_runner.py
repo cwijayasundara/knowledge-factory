@@ -15,8 +15,10 @@ LIST = ('items:\n  - id: a\n    file: prompts/autorca.md\n    match: "alias hint
 class Env:
     """A tmp repo: a bundle repo with one commit, a removal list with its seal, a fake e2ekg."""
 
-    def __init__(self, tmp: Path, monkeypatch):
+    def __init__(self, tmp: Path, monkeypatch, outside: Path):
         self.tmp = tmp
+        self.kf_home = outside / "kfhome"
+        monkeypatch.setenv("KF_HOME", str(self.kf_home))
         self.bundle = tmp / "bundle"
         self.bundle.mkdir()
         (self.bundle / "index.md").write_text("# idx\n")
@@ -26,7 +28,7 @@ class Env:
         for cmd in (["init", "-q"], ["add", "bundle"], ["commit", "-q", "-m", "x"]):
             subprocess.run(["git", *cmd], cwd=tmp, env=env, check=True)
         self.sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp, capture_output=True, text=True).stdout.strip()
-        self.removal = tmp / "removal.yaml"
+        self.removal = outside / "removal.yaml"  # the real list lives outside the repo
         self.removal.write_text(LIST)
         self.seal = tmp / "removal.seal"
         self.e2ekg = tmp / "e2ekg"
@@ -61,8 +63,8 @@ REAL_RUN = subprocess.run
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
-    return Env(tmp_path, monkeypatch)
+def env(tmp_path, monkeypatch, tmp_path_factory):
+    return Env(tmp_path, monkeypatch, tmp_path_factory.mktemp("outside"))
 
 
 def test_runner_builds_expected_command(env):
@@ -75,8 +77,9 @@ def test_runner_builds_expected_command(env):
     assert cmd[cmd.index("--arms") + 1] == "graph,graph_kb" and cmd[cmd.index("--scenarios") + 1] == "hero,v-x"
     assert cmd[cmd.index("--runs") + 1] == "3" and cmd[cmd.index("--root") + 1] == str(env.tmp / "data_heldout/seed-21")
     assert call["cwd"] == env.e2ekg
-    assert e["E2EKG_STARVE"] == str(run_dir / "removal.yaml")  # a copy made before e2ekg starts
-    assert (run_dir / "removal.yaml").read_text() == LIST
+    private = env.kf_home / "runs" / run_dir.relative_to(env.tmp / "state" / "evals") / "removal.yaml"
+    assert e["E2EKG_STARVE"] == str(private.resolve())  # a private copy made before e2ekg starts
+    assert private.read_text() == LIST and not (run_dir / "removal.yaml").exists()
     assert e["KF_STATE_DIR"] == str(run_dir / "state")  # held-out flags never reach the curator's queue
     snap = Path(e["KF_BUNDLE_SNAPSHOT"])
     assert snap.name == env.sha and (snap / "index.md").is_file()
@@ -86,6 +89,7 @@ def test_runner_builds_expected_command(env):
     assert rec["commit"] == env.sha and rec["starve"] is True and rec["test_run"] is False
     assert rec["heldout"] is True and rec["seal_ok"] is True and len(rec["seal_hash"]) == 64
     assert rec["removal_sha256"] == rec["seal_hash"] and rec["seal_author"] == "olive"
+    assert rec["removal_copy"] == str(private.resolve())
     assert rec["e2ekg_sha"] == env.e2ekg_sha and rec["snapshot"] == str(snap) and rec["started_at"]
     assert e["KF_RUN_PREFIX"] == rec["run_prefix"]
 
@@ -156,9 +160,9 @@ def test_headline_run_refused_for_an_empty_list(env):
 
 def test_a_list_edit_during_the_run_does_not_reach_it(env):
     removal.seal(env.removal, env.seal, author="olive")
-    run_dir = env.go(starve=True, heldout=True, now=NOW_ISO)
+    env.go(starve=True, heldout=True, now=NOW_ISO)
     env.removal.write_text(LIST.replace("alias hint", "other"))
-    assert (run_dir / "removal.yaml").read_text() == LIST
+    assert Path(env.calls[0]["env"]["E2EKG_STARVE"]).read_text() == LIST
 
 
 def test_own_flag_sink_keeps_flags_in_the_run_dir(env):
@@ -182,3 +186,63 @@ def test_default_paths_are_anchored_to_the_repo_root():
     root = Path(__file__).resolve().parents[2]
     assert runner.E2EKG_DIR == root / "external" / "e2ekg"
     assert removal.DEFAULT_SEAL == root / "integration" / "removal.seal"
+
+
+def test_the_private_copy_is_owner_only(env):
+    import stat
+
+    removal.seal(env.removal, env.seal, author="olive")
+    env.go(starve=True, heldout=True, now=NOW_ISO)
+    copy = Path(env.calls[0]["env"]["E2EKG_STARVE"])
+    assert stat.S_IMODE(copy.stat().st_mode) == 0o600
+    for d in (copy.parent, copy.parent.parent, env.kf_home / "runs"):
+        assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
+
+
+def test_a_private_area_inside_the_repo_is_refused(env, monkeypatch):
+    removal.seal(env.removal, env.seal, author="olive")
+    monkeypatch.setenv("KF_HOME", str(env.tmp / "kfhome"))  # env.tmp is the bundle's repo
+    with pytest.raises(SealRefused, match="outside the repo"):
+        env.go(starve=True, heldout=True, now=NOW_ISO)
+    assert env.calls == []
+
+
+SENTINEL = "zq-sentinel-7f3a"
+
+
+def test_no_list_text_lands_in_the_repo_tree(env, monkeypatch):
+    """Runs (one ok, one failing, one refused) leave no removal-list text anywhere in the repo tree."""
+    env.removal.write_text(LIST.replace("alias hint", SENTINEL))
+    removal.seal(env.removal, env.seal, author="olive")
+    env.go(starve=True, heldout=True, now=NOW_ISO, arms=["graph", "graph_kb"])
+
+    def chatty(cmd, **kw):  # an e2ekg that logs its env and fails
+        if cmd[0] == "git":
+            return REAL_RUN(cmd, **kw)
+        run_dir = Path(cmd[cmd.index("--run-dir") + 1])
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "e2ekg.log").write_text(json.dumps(kw["env"]))
+        return subprocess.CompletedProcess(cmd, 1)
+    monkeypatch.setattr(subprocess, "run", chatty)
+    errors = []
+    with pytest.raises(RuntimeError) as e:
+        env.go(starve=True, heldout=True, now=NOW_ISO, run_dir=env.tmp / "state" / "evals" / "x" / "seed-21")
+    errors.append(str(e.value))
+    env.removal.write_text("items:\n  - id: a\n    file: nope\n    match: " + SENTINEL + "\n")
+    with pytest.raises(SealRefused) as e:
+        env.go(starve=True, heldout=True, now=NOW_ISO)
+    errors.append(str(e.value))
+    leaks = [p for p in env.tmp.rglob("*") if p.is_file() and SENTINEL.encode() in p.read_bytes()]
+    assert leaks == [] and not any(SENTINEL in m for m in errors)
+
+
+def test_an_invalid_list_error_does_not_quote_the_list(tmp_path):
+    p = tmp_path / "r.yaml"
+    p.write_text("items:\n  - id: a\n    file: nope\n    match: " + SENTINEL + "\n    why_derivable_from: c\n")
+    with pytest.raises(removal.RemovalRefused) as e:
+        removal.load_nonempty(p)
+    assert SENTINEL not in str(e.value) and "file" in str(e.value)
+    p.write_text("items: [" + SENTINEL + "\n  - : :\n")
+    with pytest.raises(removal.RemovalRefused) as e:
+        removal.load_nonempty(p)
+    assert SENTINEL not in str(e.value)

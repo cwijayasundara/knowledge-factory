@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,6 +61,24 @@ def _e2ekg_sha(e2ekg_dir: Path) -> str | None:
         return None
 
 
+def private_copy_path(run_dir: Path, state_dir: Path) -> Path:
+    """Where a starved run's list copy lives: ${KF_HOME:-~/.kf}/runs/<run dir relative to
+    <state_dir>/evals>/removal.yaml (else runs/<parent>/<name>/), outside the repo the reviewer browses."""
+    run_dir, evals = Path(run_dir).resolve(), (Path(state_dir) / "evals").resolve()
+    rel = run_dir.relative_to(evals) if evals in run_dir.parents else Path(run_dir.parent.name) / run_dir.name
+    return removal.kf_home().resolve() / "runs" / rel / "removal.yaml"
+
+
+def _toplevel(path: Path) -> Path | None:
+    p = Path(path)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    try:
+        return Path(_git(p if p.is_dir() else p.parent, "rev-parse", "--show-toplevel"))
+    except RuntimeError:
+        return None
+
+
 def run_eval(
     *,
     arms: list[str],
@@ -88,7 +105,9 @@ def run_eval(
     Flags go to <state_dir>/flags.db (the curator's queue) only for curation runs; a held-out run
     (or one with own_flag_sink, such as a gate run) writes them to <run_dir>/state/flags.db, so
     held-out data never reaches the curator (spec 9b). A starved run reads a copy of the removal
-    list made in the run dir before e2ekg starts, so a later edit of the list cannot reach it.
+    list made before e2ekg starts, so a later edit of the list cannot reach it; the copy lives in a
+    private run area outside the repo (${KF_HOME:-~/.kf}/runs/..., dirs 0700, file 0600) and its path
+    and sha256 go into kf_run.json, so no list text is in the repo the blind reviewer browses.
     `snapshot` replaces the bundle snapshot of `bundle_commit` (the gate's as-if-approved copy)."""
     from kf.bundle import serve
 
@@ -114,9 +133,16 @@ def run_eval(
     if starve and not removal_list.is_file():
         raise SealRefused(f"a starved run needs the removal list: {removal_list} not found")
 
+    run_dir = Path(run_dir).resolve() if run_dir else state_dir / "evals" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    if starve:
+        private = private_copy_path(run_dir, state_dir)
+        for repo in {removal.REPO_ROOT, _toplevel(bundle), _toplevel(state_dir)} - {None}:
+            if removal.inside_repo(private, repo):
+                raise SealRefused(f"the private run area {private.parent} must be outside the repo {repo} "
+                                  "(set KF_HOME to a directory the reviewer does not browse)")
+
     commit = resolve_commit(bundle, bundle_commit)
     now = now or _git(bundle, "log", "-1", "--format=%aI", commit)  # author date: survives rebases of the run
-    run_dir = Path(run_dir).resolve() if run_dir else state_dir / "evals" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir.mkdir(parents=True, exist_ok=True)
     flag_state = run_dir / "state" if (heldout or own_flag_sink) else state_dir
     prefix = run_prefix or f"{'heldout' if heldout else 'curation'}-{run_dir.parent.name}-{run_dir.name}"
@@ -129,8 +155,8 @@ def run_eval(
         env["KF_BUNDLE_SNAPSHOT"] = str(snap)
     list_copy = None
     if starve:
-        list_copy = run_dir / "removal.yaml"
-        shutil.copyfile(removal_list, list_copy)
+        list_copy = private_copy_path(run_dir, state_dir)
+        removal.write_private_copy(removal_list, list_copy, area=removal.kf_home().resolve() / "runs")
         env["E2EKG_STARVE"] = str(list_copy)
 
     cmd = ["uv", "run", "e2ekg", "eval", "--root", str(data_root), "--runs", str(runs),
@@ -141,7 +167,8 @@ def run_eval(
     (run_dir / "kf_run.json").write_text(json.dumps({
         "commit": commit, "now": now, "seal_hash": seal_hash, "seal_ok": seal_ok,
         "seal_author": seal_info.get("author") if seal_info else None,
-        "removal_sha256": removal.digest(list_copy) if list_copy else None, "starve": starve,
+        "removal_sha256": removal.digest(list_copy) if list_copy else None,
+        "removal_copy": str(list_copy) if list_copy else None, "starve": starve,
         "test_run": test_run, "heldout": heldout, "arms": arms, "scenarios": scenarios, "runs": runs,
         "data_root": str(data_root), "returncode": proc.returncode, "started_at": started,
         "e2ekg_sha": _e2ekg_sha(e2ekg_dir), "snapshot": str(snap) if snap else None,

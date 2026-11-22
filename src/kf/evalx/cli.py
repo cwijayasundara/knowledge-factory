@@ -106,7 +106,7 @@ def _g2(args) -> int:
         if not all(r["starve"] for r in recs):
             problems.append(f"--{name} holds a run that was not starved")
     recs = [r for rs in sets.values() for r in rs]
-    seal_issues, seal_info = seal_problems(recs, Path(args.seal_file))
+    seal_issues, seal_info = seal_problems(recs, Path(args.seal_file), Path(args.repo))
     problems += seal_issues
     if Path(args.list).is_file() and not removal.verify_seal(Path(args.list), Path(args.seal_file)):
         problems.append(f"{args.list} changed since it was sealed")

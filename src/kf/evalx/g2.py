@@ -118,9 +118,11 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
 
 
-def seal_problems(recs: list[dict], seal_file: Path) -> tuple[list[str], dict | None]:
+def seal_problems(recs: list[dict], seal_file: Path, repo: Path | None = None) -> tuple[list[str], dict | None]:
     """The seal must be committed and clean in git, sealed before the first run started, and equal
-    to the hash of the list copy every run read (and recorded)."""
+    to the hash of the list copy every run read (and recorded). Each run's copy lives at its recorded
+    private path outside the repo (${KF_HOME:-~/.kf}/runs/...) and must still hash to the recorded
+    value and to the seal."""
     from kf.evalx import removal
 
     seal_file = Path(seal_file).resolve()
@@ -148,14 +150,27 @@ def seal_problems(recs: list[dict], seal_file: Path) -> tuple[list[str], dict | 
         if r.get("seal_hash") != info["sha256"] or r.get("removal_sha256") != info["sha256"]:
             out.append(f"{r.get('_dir', 'a run')} did not run on the sealed list")
             break
+    repos = {Path(repo).resolve()} if repo else set()
+    if top.returncode == 0:
+        repos.add(Path(top.stdout.strip()).resolve())
     for r in recs:
-        copy = Path(r.get("_dir", "")) / "removal.yaml"
+        where = r.get("_dir", "a run")
+        copy = r.get("removal_copy")
+        if not copy:
+            out.append(f"{where}: no recorded private copy of the sealed list")
+            break
+        copy = Path(copy)
+        if any(removal.inside_repo(copy, rp) for rp in repos):
+            out.append(f"{where}: the list copy {copy} is inside the repo")
+            break
         try:
-            ok = copy.is_file() and removal.digest(copy) == info["sha256"] and removal.load_nonempty(copy)
+            ok = (copy.is_file() and removal.digest(copy) == r.get("removal_sha256") == info["sha256"]
+                  and removal.load_nonempty(copy))
         except (ValueError, OSError):
             ok = False
         if not ok:
-            out.append(f"{r.get('_dir', 'a run')}: no non-empty copy of the sealed list in the run dir")
+            out.append(f"{where}: the private list copy {copy} is missing, empty or no longer matches the "
+                       "recorded hash and the seal")
             break
     return out, info
 

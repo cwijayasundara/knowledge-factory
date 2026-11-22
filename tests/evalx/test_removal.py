@@ -77,7 +77,7 @@ def test_duplicate_ids_rejected():
 def test_seal_refuses_an_invalid_list(tmp_path):
     p, s = tmp_path / "r.yaml", tmp_path / "removal.seal"
     p.write_text("items:\n  - id: a\n    file: prompts/autorca.md\n    match: x\n")
-    with pytest.raises(ValidationError):
+    with pytest.raises(RemovalRefused, match="why_derivable_from"):  # named, never quoted
         seal(p, s, author="olive")
     assert not s.exists()
 

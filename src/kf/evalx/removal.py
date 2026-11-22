@@ -36,6 +36,30 @@ def default_list() -> Path:
     return Path(os.environ.get(LIST_ENV) or Path.home() / ".kf" / "removal.yaml").expanduser()
 
 
+def kf_home() -> Path:
+    """$KF_HOME, else ~/.kf: the list author's private area outside the repo."""
+    return Path(os.environ.get("KF_HOME") or Path.home() / ".kf").expanduser()
+
+
+def write_private_copy(src: Path, dest: Path, *, area: Path) -> Path:
+    """Copy the list to dest (mode 0600), every directory from area down to dest's parent mode 0700."""
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    d, area = dest.parent, Path(area)
+    while True:
+        os.chmod(d, 0o700)
+        if d == area or area not in d.parents:
+            break
+        d = d.parent
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, Path(src).read_bytes())
+    finally:
+        os.close(fd)
+    return dest
+
+
 def inside_repo(path: Path, repo: Path = REPO_ROOT) -> bool:
     p, r = Path(path).expanduser().resolve(), Path(repo).resolve()
     return p == r or r in p.parents
@@ -91,8 +115,21 @@ def digest(path: Path) -> str:
 
 
 def load_nonempty(path: Path) -> RemovalList:
-    """The list at `path`; RemovalRefused when it has no items."""
-    rl = RemovalList.load(path)
+    """The list at `path`; RemovalRefused when it has no items or does not parse. The error names
+    fields and line numbers only, never the list's text (it may reach logs a blind reviewer reads)."""
+    from pydantic import ValidationError
+
+    try:
+        rl = RemovalList.load(path)
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f" near line {mark.line + 1}" if mark is not None else ""
+        raise RemovalRefused(f"{path}: the removal list is not valid YAML{where}") from None
+    except ValidationError as e:
+        fields = sorted({".".join(map(str, err["loc"])) for err in e.errors(include_input=False)})
+        raise RemovalRefused(f"{path}: the removal list does not validate: {', '.join(fields)}") from None
+    except ValueError:
+        raise RemovalRefused(f"{path}: expected a mapping with an 'items' list") from None
     if not rl.items:
         raise RemovalRefused(f"{path}: the removal list has no items (a starved run would starve nothing)")
     return rl
