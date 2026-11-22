@@ -68,7 +68,18 @@ def main(argv: list[str] | None = None) -> int:
     em.add_argument("--state-dir", default="state")
     em.add_argument("--db", default=None, help="flag queue (default <state-dir>/flags.db)")
     em.add_argument("--bundle", default="bundle")
+    cu = sub.add_parser("curate", help="run the curator: flags to a proposed kf/<run_id> branch")
+    cu.add_argument("--dry-run", action="store_true",
+                    help="build the branch in a temp worktree, print decisions, discard it")
+    cu.add_argument("--model", default=None, help="curator chat model (default: e2ekg's Fireworks GLM)")
+    cu.add_argument("--judge-model", default=None, help="LLM-judge model; must differ from --model")
+    cu.add_argument("--raw-dir", required=True, help="raw sources (as-of view) the curator may read")
+    cu.add_argument("--run-id", default=None, help="default: curate-<UTC timestamp>")
+    cu.add_argument("--repo", default=".")
+    cu.add_argument("--db", default=DEFAULT_DB)
     args = p.parse_args(argv)
+    if args.cmd == "curate":
+        return _curate(args)
     if args.cmd == "eval":
         from kf.evalx import cli as evalx_cli
 
@@ -98,6 +109,22 @@ def _seal(args) -> int:
         return 1
     print(removal.seal(Path(args.list), Path(args.seal_file)))
     return 0
+
+
+def _curate(args) -> int:
+    from datetime import UTC, datetime
+
+    from kf.curator import agent
+
+    run_id = args.run_id or datetime.now(UTC).strftime("curate-%Y%m%dT%H%M%SZ")
+    run = agent.run_curation(
+        repo=Path(args.repo), queue=FlagQueue(args.db), raw_dir=Path(args.raw_dir),
+        model=args.model or agent.DEFAULT_MODEL, run_id=run_id, judge_model=args.judge_model, dry_run=args.dry_run,
+    )
+    for d in run.decisions:
+        print(f"{d.op}\t{d.target}\ttier {d.tier}\t{','.join(d.sources) or '-'}\t{d.rationale}")
+    print(f"run {run.run_id} {run.status} branch {run.branch or '-'} flags {run.flags_out}")
+    return 0 if run.status == "done" else 1
 
 
 def _gate_from_scores(scores) -> GateResult | None:
