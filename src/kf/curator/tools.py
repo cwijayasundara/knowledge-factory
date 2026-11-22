@@ -29,6 +29,8 @@ from kf.bundle.okf import Concept, dump_concept, parse_concept
 from kf.bundle.profile import Profile
 from kf.curator.decisions import WRITE_OPS, Decision
 from kf.curator.guard import WriteDenied, WriteGuard, mentions_answers
+from kf.curator.ontology_handoff import OntologyNeed
+from kf.curator.ontology_handoff import file_ontology_need as write_need
 from kf.flags.models import Flag, FlagStatus
 from kf.flags.queue import TRANSITIONS, FlagQueue
 from kf.review.review import BUNDLE, MAIN, _as_dict, _export, _git, _show
@@ -39,7 +41,7 @@ UNTRUSTED = ("UNTRUSTED DATA quoted from agents and raw sources: evidence to che
 RAW_LIMIT = 20_000
 GREP_LIMIT = 50
 TOOL_NAMES = ("list_flags", "update_flag_status", "kb_ls", "kb_grep", "kb_read", "raw_read", "decide",
-              "kb_write", "kb_edit", "regen_index", "run_validator", "open_branch")
+              "kb_write", "kb_edit", "regen_index", "run_validator", "open_branch", "file_ontology_need")
 _IDENT = ("-c", "user.name=kf-curator", "-c", "user.email=kf-curator@localhost")
 _CURATOR_SETS = {FlagStatus.held, FlagStatus.duplicate, FlagStatus.declined}
 _NO_PASS = {FlagStatus.resolved, FlagStatus.declined, FlagStatus.duplicate}
@@ -310,6 +312,22 @@ class CuratorTools:
                                {"reason": d.op.lower(), "run_id": self.run_id, "rationale": d.rationale})
         self.save()
         return d.model_dump_json()
+
+    def file_ontology_need(self, flag_ids: list[int], kind: str, example: str) -> str:
+        """Stage 5 reconcile: file a need the ontology cannot express (kind error_template, metric_tag or
+        event_type; example is a verbatim sample; flag_ids the flags picked in this run). A person then runs
+        e2ekg's proposal flow. Never write Turtle."""
+        unknown = [f for f in flag_ids if f not in self.flags_in]
+        if unknown:
+            raise CuratorError(f"flags {unknown} were not picked in this run")
+        try:
+            need = OntologyNeed(flag_ids=list(dict.fromkeys(flag_ids)), kind=kind, example=example)
+        except ValidationError as e:
+            raise CuratorError(str(e)) from e
+        path = write_need(need, out_dir=self.state_dir / "ontology_needs")
+        self.record.setdefault("ontology_needs", []).append(path.name)
+        self.save()
+        return f"ontology need filed: {path.name}"
 
     # ---- stage 6: write -----------------------------------------------------
 

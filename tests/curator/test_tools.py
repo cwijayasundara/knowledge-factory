@@ -76,7 +76,8 @@ def test_no_delete_tool(tools):
     assert not hasattr(tools, "kb_delete")
     names = set(build_curator_tools(tools))
     assert names == {"list_flags", "update_flag_status", "kb_ls", "kb_grep", "kb_read", "raw_read", "decide",
-                     "kb_write", "kb_edit", "regen_index", "run_validator", "open_branch"}
+                     "kb_write", "kb_edit", "regen_index", "run_validator", "open_branch",
+                     "file_ontology_need"}
 
 
 def test_unsourced_claim_becomes_escalate(tools, queue):

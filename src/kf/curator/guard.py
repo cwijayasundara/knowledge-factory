@@ -21,6 +21,8 @@ DEFAULT_DENY = [
     "*tiers.py",                      # tier rules
     "*curator/*prompt*",              # the curator prompt
     ".git", ".git/*", "*/.git", "*/.git/*",
+    "ontology", "ontology/*",         # the ontology goes through e2ekg's proposal flow
+    "*.ttl",                          # the curator never writes Turtle
 ]
 FORBIDDEN_PART = "_answers"  # anti-goal A1: the answer key is never reachable
 

@@ -79,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     cu.add_argument("--run-id", default=None, help="default: curate-<UTC timestamp>")
     cu.add_argument("--repo", default=".")
     cu.add_argument("--db", default=DEFAULT_DB)
+    on = sub.add_parser("ontology-needs", help="list ontology needs the curator filed, with the e2ekg command")
+    on.add_argument("--state-dir", default="state")
     args = p.parse_args(argv)
     if args.cmd == "curate":
         return _curate(args)
@@ -86,6 +88,11 @@ def main(argv: list[str] | None = None) -> int:
         from kf.evalx import cli as evalx_cli
 
         return evalx_cli.run(args)
+    if args.cmd == "ontology-needs":
+        from kf.curator.ontology_handoff import render_needs
+
+        print(render_needs(Path(args.state_dir) / "ontology_needs"))
+        return 0
     if args.cmd == "seal":
         return _seal(args)
     if args.cmd == "review":
