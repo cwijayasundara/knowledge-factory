@@ -132,3 +132,32 @@ def test_transitions(tmp_path):
     assert q.set_status(f.id, FlagStatus.open).status == FlagStatus.open
     with pytest.raises(InvalidTransition):
         q.set_status(f.id, FlagStatus.in_review)
+
+
+@pytest.mark.parametrize("terminal", ["resolved", "declined", "duplicate"])
+def test_a_flag_after_a_terminal_one_is_new_not_a_duplicate(tmp_path, terminal):
+    """Recurrence (spec 7): the same flag returning after resolution must be recorded, not hidden."""
+    q = FlagQueue(tmp_path / "q.db")
+    first = _add(q, "alias TMS unknown")
+    path = {"resolved": [FlagStatus.triaged, FlagStatus.in_review, FlagStatus.resolved],
+            "declined": [FlagStatus.declined], "duplicate": [FlagStatus.duplicate]}[terminal]
+    for s in path:
+        q.set_status(first.id, s)
+    again = _add(q, "alias TMS unknown")
+    assert again.id != first.id and again.status is FlagStatus.open
+
+
+def test_a_flag_still_open_or_held_is_deduplicated(tmp_path):
+    q = FlagQueue(tmp_path / "q.db")
+    first = _add(q, "alias TMS unknown")
+    q.set_status(first.id, FlagStatus.held)
+    assert _add(q, "alias TMS unknown").id == first.id
+
+
+def test_the_cap_counts_every_flag_of_the_run(tmp_path):
+    q = FlagQueue(tmp_path / "q.db")
+    for i in range(20):
+        f = _add(q, f"s{i}")
+        q.set_status(f.id, FlagStatus.declined)
+    with pytest.raises(FlagRateLimited):
+        _add(q, "s0")

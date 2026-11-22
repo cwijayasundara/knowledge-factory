@@ -1,7 +1,7 @@
-From 7dfd4ef4011266da634fd8ddbaad945fb2d939d2 Mon Sep 17 00:00:00 2001
+From 2afd3af6d8b373e8b0b8a86bc7ff34fe6de18d23 Mon Sep 17 00:00:00 2001
 From: kf integration <kf@localhost>
 Date: Sun, 22 Nov 2026 07:45:13 +0000
-Subject: [PATCH 1/2] feat(autorca): optional knowledge-factory tools (kf_flag,
+Subject: [PATCH 1/3] feat(autorca): optional knowledge-factory tools (kf_flag,
  kb_search, kb_read)
 
 build_autorca/run_rca take kf=, a dict of LangChain tools from
@@ -13,8 +13,8 @@ Unset, the agent is unchanged.
  src/e2ekg/agent/prompts/kf.md  |   1 +
  src/e2ekg/agent/specialists.py |  15 +++--
  tests/agent/test_autorca.py    |   2 +-
- tests/agent/test_kf_wiring.py  | 107 +++++++++++++++++++++++++++++++++
- 5 files changed, 138 insertions(+), 16 deletions(-)
+ tests/agent/test_kf_wiring.py  | 116 +++++++++++++++++++++++++++++++++
+ 5 files changed, 147 insertions(+), 16 deletions(-)
  create mode 100644 src/e2ekg/agent/prompts/kf.md
  create mode 100644 tests/agent/test_kf_wiring.py
 
@@ -108,11 +108,11 @@ index 26f319b..c88880e 100644
              # Async, so the specialists the commander dispatches in one turn run concurrently
 diff --git a/src/e2ekg/agent/prompts/kf.md b/src/e2ekg/agent/prompts/kf.md
 new file mode 100644
-index 0000000..fcaa4ae
+index 0000000..fc35fcb
 --- /dev/null
 +++ b/src/e2ekg/agent/prompts/kf.md
 @@ -0,0 +1 @@
-+You have a company knowledge bundle and a way to improve it. Before you conclude, use kb_search and kb_read to look up company knowledge that bears on the task (service aliases, which source to trust, investigation procedures). When the knowledge you need is missing, wrong or stale, record it with kf_flag instead of stopping, then continue the task with the best workaround you have.
++You can read a company knowledge bundle with kb_search and kb_read, and report a problem with it using kf_flag. When knowledge you need is missing, wrong or stale, record it with kf_flag, then continue the task.
 diff --git a/src/e2ekg/agent/specialists.py b/src/e2ekg/agent/specialists.py
 index 65f5ccc..a654e9c 100644
 --- a/src/e2ekg/agent/specialists.py
@@ -163,10 +163,10 @@ index fb9acae..8955ecd 100644
              **{f"tool:{n}": json.dumps(convert_to_openai_tool(t)) for n, t in tools.items()},
 diff --git a/tests/agent/test_kf_wiring.py b/tests/agent/test_kf_wiring.py
 new file mode 100644
-index 0000000..f2f05fe
+index 0000000..6e84958
 --- /dev/null
 +++ b/tests/agent/test_kf_wiring.py
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,116 @@
 +"""The knowledge factory's tools (kf_flag, kb_search, kb_read) wired into AutoRCA: with `kf`
 +unset nothing changes; with it set the commander and every specialist get the three tools and
 +prompts/kf.md, and a flag the agent raises lands in the factory's queue."""
@@ -274,6 +274,15 @@ index 0000000..f2f05fe
 +    assert "continue" in replies[0].lower()
 +    [flag] = FlagQueue(tmp_path / "state" / "flags.db").list()
 +    assert (flag.run_id, flag.agent_id, flag.scenario) == ("hero__graph_kb__0", "autorca", "hero")
++
++
++def test_the_kf_note_is_neutral():
++    """The note names the tools only: no hint at what knowledge to look for (the removal list's
++    candidates: aliases, which source to trust, investigation steps), so graph_kb gains nothing over
++    graph from the prompt itself."""
++    note = prompt("kf").lower()
++    for word in ("alias", "source", "trust", "procedure", "investigat", "tag", "convention"):
++        assert word not in note, word
 -- 
 2.50.1 (Apple Git-155)
 

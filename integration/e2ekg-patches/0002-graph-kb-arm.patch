@@ -1,19 +1,20 @@
-From ef8a31c380f25f09e7b9995df5aeceb811613a64 Mon Sep 17 00:00:00 2001
+From fb46a025118de1941ad516e89c706fd5f24207d8 Mon Sep 17 00:00:00 2001
 From: kf integration <kf@localhost>
 Date: Sun, 22 Nov 2026 07:47:21 +0000
-Subject: [PATCH 2/2] feat(evals): opt-in graph_kb arm (graph plus the
+Subject: [PATCH 2/3] feat(evals): opt-in graph_kb arm (graph plus the
  knowledge-factory tools)
 
 graph_kb runs the graph arm with kf_flag / kb_search / kb_read from
 kf.agent_tools, imported only for this arm. It reads the flag queue dir
 from KF_STATE_DIR (flags.db) and the frozen bundle from KF_BUNDLE_SNAPSHOT
 and refuses to run when either is unset. Flags carry run_id
-<scenario>__graph_kb__<run> and agent_id autorca.
+<KF_RUN_PREFIX>__<scenario>__graph_kb__<run> (the prefix is optional: the
+factory sets split, eval stamp and seed) and agent_id autorca.
 ---
- src/e2ekg/evals/arms.py    |  9 ++++--
- src/e2ekg/evals/run.py     | 42 +++++++++++++++++++++----
- tests/evals/test_kb_arm.py | 64 ++++++++++++++++++++++++++++++++++++++
- 3 files changed, 107 insertions(+), 8 deletions(-)
+ src/e2ekg/evals/arms.py    |  9 ++++-
+ src/e2ekg/evals/run.py     | 46 +++++++++++++++++++---
+ tests/evals/test_kb_arm.py | 80 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 127 insertions(+), 8 deletions(-)
  create mode 100644 tests/evals/test_kb_arm.py
 
 diff --git a/src/e2ekg/evals/arms.py b/src/e2ekg/evals/arms.py
@@ -38,7 +39,7 @@ index abf99f0..2d77032 100644
 +ARMS = (*LLM_ARMS, FAST_ARM, *KB_ARM, *ENGINE_ARMS)
  DEFAULT_ARMS = (*LLM_ARMS, *ENGINE_ARMS)
 diff --git a/src/e2ekg/evals/run.py b/src/e2ekg/evals/run.py
-index 08d4d5b..9551872 100644
+index 08d4d5b..8e0aa05 100644
 --- a/src/e2ekg/evals/run.py
 +++ b/src/e2ekg/evals/run.py
 @@ -7,6 +7,8 @@ Arms (all scored by the same `score()`):
@@ -77,11 +78,12 @@ index 08d4d5b..9551872 100644
      return plan
  
  
-@@ -185,8 +187,32 @@ def run_engine(case: Case, arm: str) -> dict:
+@@ -185,8 +187,36 @@ def run_engine(case: Case, arm: str) -> dict:
                          for c in chains[:RANKING_SHOWN]]}
  
  
 +KF_ENV = ("KF_STATE_DIR", "KF_BUNDLE_SNAPSHOT")
++KF_RUN_PREFIX = "KF_RUN_PREFIX"  # optional: the factory's split, eval stamp and seed
 +
 +
 +def kf_env() -> tuple[Path, Path]:
@@ -98,9 +100,12 @@ index 08d4d5b..9551872 100644
 +
 +
 +def kf_tools(case: Case, run_id: str) -> dict:
-+    """kf_flag / kb_search / kb_read for one graph_kb run (kf is imported only here)."""
++    """kf_flag / kb_search / kb_read for one graph_kb run (kf is imported only here). The flags'
++    run id is <$KF_RUN_PREFIX>__<run name> when the prefix is set, else the run name."""
 +    from kf.agent_tools import make_kf_tools
 +    state, snapshot = kf_env()
++    prefix = os.environ.get(KF_RUN_PREFIX)
++    run_id = f"{prefix}__{run_id}" if prefix else run_id
 +    return make_kf_tools(queue_path=state / "flags.db", bundle_snapshot=snapshot, run_id=run_id,
 +                         agent_id="autorca", scenario=case.scenario)
 +
@@ -111,7 +116,7 @@ index 08d4d5b..9551872 100644
      log, kw = RunLog(), ({"model": model} if model else {})
      if arm == "raw_only":
          raw = case.root / "raw" / case.scenario
-@@ -202,8 +228,10 @@ def run_agent(case: Case, arm: str, evals_dir: Path,
+@@ -202,8 +232,10 @@ def run_agent(case: Case, arm: str, evals_dir: Path,
                                trail=trail, **kw)
          escalated = any(s["tool"] == "escalate" for s in trail.steps)
      else:
@@ -123,7 +128,7 @@ index 08d4d5b..9551872 100644
      return {"report": report.model_dump(), "escalated": escalated, **log.tokens(),
              "model_calls": log.model_calls, "tools": log.tools, "trail": trail.dump()}
  
-@@ -213,7 +241,7 @@ def run_one(spec: RunSpec, *, root: Path, evals_dir: Path,
+@@ -213,7 +245,7 @@ def run_one(spec: RunSpec, *, root: Path, evals_dir: Path,
      case, t0 = case_for(root, spec.scenario), time.perf_counter()
      started = datetime.now(UTC)
      body = (run_engine(case, spec.arm) if not spec.llm
@@ -132,7 +137,7 @@ index 08d4d5b..9551872 100644
      return {"scenario": spec.scenario, "arm": spec.arm, "run": spec.run, "alert": case.alert_id,
              "as_of": case.as_of.isoformat(), "started_utc": started.isoformat(),
              "seconds": round(time.perf_counter() - t0, 1), **body}
-@@ -285,6 +313,8 @@ def run_evals(scenarios: list[str], runs: int, arms: list[str], *, root: Path =
+@@ -285,6 +317,8 @@ def run_evals(scenarios: list[str], runs: int, arms: list[str], *, root: Path =
      <root>/evals), then score every finished run. `do` replaces the real runner in tests."""
      root = Path(root)
      evals_dir = root / "evals"
@@ -143,10 +148,10 @@ index 08d4d5b..9551872 100644
      run_dir.mkdir(parents=True, exist_ok=True)
 diff --git a/tests/evals/test_kb_arm.py b/tests/evals/test_kb_arm.py
 new file mode 100644
-index 0000000..4bab40c
+index 0000000..fcc2f91
 --- /dev/null
 +++ b/tests/evals/test_kb_arm.py
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,80 @@
 +"""The opt-in graph_kb arm: the graph arm plus the knowledge factory's tools, over the flag queue
 +in $KF_STATE_DIR and the frozen bundle in $KF_BUNDLE_SNAPSHOT. No network."""
 +import pytest
@@ -211,6 +216,22 @@ index 0000000..4bab40c
 +    [flag] = FlagQueue(kf_env / "state" / "flags.db").list()
 +    assert (flag.run_id, flag.agent_id, flag.scenario) == ("hero__graph_kb__0", "autorca", "hero")
 +    assert any("continue" in r.lower() for r in replies)
++
++
++def test_graph_kb_run_id_carries_the_factory_prefix(eval_root, kf_env, monkeypatch):
++    """KF_RUN_PREFIX (the factory's split, eval stamp and seed) prefixes the run id, so flags from
++    different seeds or invocations never share a run id (the queue de-duplicates and caps per run id)."""
++    monkeypatch.setenv("KF_RUN_PREFIX", "curation-20261122T000000Z-seed11")
++
++    def policy(messages, bound):
++        if not [m for m in messages if isinstance(m, ToolMessage)]:
++            return AIMessage("", tool_calls=[{"name": "kf_flag", "id": "f", "args": {
++                "kind": "missing", "summary": "no alias for TMS"}}])
++        return AIMessage("", tool_calls=[{"name": "RCAReport", "args": REPORT, "id": "r"}])
++    run_one(RunSpec("hero", "graph_kb", 0), root=eval_root, evals_dir=eval_root / "evals",
++            model=fake_tool_model(policy))
++    [flag] = FlagQueue(kf_env / "state" / "flags.db").list()
++    assert flag.run_id == "curation-20261122T000000Z-seed11__hero__graph_kb__0"
 -- 
 2.50.1 (Apple Git-155)
 

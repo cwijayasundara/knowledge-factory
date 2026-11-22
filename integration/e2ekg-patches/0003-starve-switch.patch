@@ -1,7 +1,7 @@
-From ff28926437a7f2ba34221c68258b352bf8f0709c Mon Sep 17 00:00:00 2001
+From 991ea17ffef5a2660b85357a7f5e13d9b66561f0 Mon Sep 17 00:00:00 2001
 From: kf integration <kf@localhost>
 Date: Sun, 22 Nov 2026 07:56:47 +0000
-Subject: [PATCH] feat(agent): knowledge-starved switch (E2EKG_STARVE)
+Subject: [PATCH 3/3] feat(agent): knowledge-starved switch (E2EKG_STARVE)
 
 With E2EKG_STARVE naming the knowledge factory's removal.yaml, prompt()
 deletes each listed match text from the named prompts/<name>.md, so the

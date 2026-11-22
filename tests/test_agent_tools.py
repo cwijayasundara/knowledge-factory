@@ -63,3 +63,14 @@ def test_kb_search_and_read_serve_the_snapshot(tmp_path):
     assert "tms-api" in t["kb_read"].invoke({"path": "domain/tms.md"})
     assert "no current knowledge" in t["kb_search"].invoke({"query": "zebra"}).lower()
     assert "bundle-relative" in t["kb_read"].invoke({"path": "../q.db"})
+
+
+def test_kb_tool_descriptions_are_neutral(tmp_path):
+    """The kb tools' model-facing text hints at no particular knowledge (the removal list's candidates)."""
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+    import json
+
+    t = tools(tmp_path)
+    text = json.dumps([convert_to_openai_tool(t[n]) for n in ("kb_search", "kb_read")]).lower()
+    for word in ("alias", "procedure", "trust", "field name"):
+        assert word not in text, word

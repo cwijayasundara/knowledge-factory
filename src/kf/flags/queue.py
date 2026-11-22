@@ -18,6 +18,9 @@ TRANSITIONS: dict[FlagStatus, set[FlagStatus]] = {
 }
 
 
+TERMINAL = (S.resolved, S.declined, S.duplicate)  # a flag repeated after one of these is new (recurrence)
+
+
 class FlagRateLimited(Exception):
     pass
 
@@ -91,8 +94,9 @@ class FlagQueue:
     ) -> Flag:
         with self._write() as conn:
             dup = conn.execute(
-                "SELECT * FROM flags WHERE run_id=? AND kind=? AND target IS ? AND summary=?",
-                (run_id, flag_in.kind.value, flag_in.target, flag_in.summary),
+                "SELECT * FROM flags WHERE run_id=? AND kind=? AND target IS ? AND summary=?"
+                " AND status NOT IN (?,?,?)",
+                (run_id, flag_in.kind.value, flag_in.target, flag_in.summary, *(s.value for s in TERMINAL)),
             ).fetchone()
             if dup:
                 return self._flag(dup)

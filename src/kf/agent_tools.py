@@ -79,7 +79,7 @@ def make_kf_tools(*, queue_path: Path, bundle_snapshot: Path, run_id: str, agent
         """Search the company knowledge bundle (current, reviewed knowledge only).
 
         Args:
-            query: Words to look for, such as a service alias, a field name or a procedure.
+            query: Words to look for.
         """
         hits = serve.kb_search(bundle, query, now=now())
         if not hits:
@@ -91,7 +91,7 @@ def make_kf_tools(*, queue_path: Path, bundle_snapshot: Path, run_id: str, agent
         """Read one concept or skill from the company knowledge bundle.
 
         Args:
-            path: The bundle-relative path kb_search returned, such as domain/aliases.md.
+            path: A bundle-relative path that kb_search returned.
         """
         try:
             return serve.kb_read(bundle, path, now=now())
