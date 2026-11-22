@@ -8,11 +8,15 @@ import pytest
 from kf.cli import main
 from kf.flags.models import FlagIn, FlagStatus
 from kf.flags.queue import FlagQueue
+from datetime import timedelta
+
 from kf.bundle.okf import load_concept
+from kf.bundle.serve import current_concepts
 from kf.review.gate import GateResult
 from kf.review.review import (
     Approval,
     CiFailed,
+    CuratorTier3Refused,
     GateRequired,
     JudgeRequired,
     ScriptedNotAllowed,
@@ -173,9 +177,71 @@ def test_tier0_needs_no_approval_but_ci(repo, q):
 def test_cli_approve_and_scripted_refusal(repo, q, tmp_path, capsys):
     db = str(tmp_path / "q.db")
     base = ["review", "approve", "--repo", str(repo), "--db", db, "--branch", "kf/run-1", "--by", "x"]
+    assert main([*base, "--by", "alice"]) == 2  # no scores recorded: Tier 1 refused
     write_run(repo, gate={"passed": True, "reasons": []})
+    assert main([*base, "--by", "alice"]) == 2  # self-asserted gate.passed is ignored
+    write_run(repo, scores={"base": dict(top1=5, runs=9, trap=0, control_fp=0), "head": dict(top1=1, runs=9, trap=0, control_fp=0)})
+    assert main([*base, "--by", "alice"]) == 2  # regression fails the gate
+    write_run(repo, scores={"base": dict(top1=5, runs=9, trap=0, control_fp=0), "head": dict(top1=5, runs=9, trap=0, control_fp=0)})
     assert main([*base, "--kind", "scripted"]) == 2
     assert main(["review", "list", "--repo", str(repo)]) == 0
     assert "kf/run-1" in capsys.readouterr().out
     assert main([*base, "--by", "alice"]) == 0
     assert load_concept(repo / "bundle" / "orders.md").front["verified"][0]["by"] == "human:alice"
+
+
+def t3_files():
+    return {"kf-profile.yaml": 'okf_version: "0.3"\n'}
+
+
+def test_tier3_on_curator_branch_refused(repo, q):
+    commit_branch(repo, "kf/run-t3", t3_files())
+    head = _git(repo, "rev-parse", "main")
+    with pytest.raises(CuratorTier3Refused):
+        approve_and_merge(repo, "kf/run-t3", approval=person(), test_run=False, gate=PASS, queue=q)
+    assert _git(repo, "rev-parse", "main") == head
+
+
+def test_tier3_non_curator_branch_person_merges(repo, q):
+    commit_branch(repo, "human/profile", t3_files())
+    res = approve_and_merge(repo, "human/profile", approval=person(), test_run=False, gate=PASS, queue=q)
+    assert res.merged and res.tier == 3
+
+
+def test_tier3_needs_gate_and_scripted_rules(repo, q):
+    commit_branch(repo, "human/profile", t3_files())
+    with pytest.raises(GateRequired):
+        approve_and_merge(repo, "human/profile", approval=person(), test_run=False, gate=None, queue=q)
+    scripted = Approval("x", "scripted", NOW)
+    with pytest.raises(ScriptedNotAllowed):
+        approve_and_merge(repo, "human/profile", approval=scripted, test_run=False, gate=PASS, queue=q)
+    assert approve_and_merge(repo, "human/profile", approval=scripted, test_run=True, gate=PASS, queue=q).merged
+
+
+def test_merge_sets_review_approved_and_is_served(repo, q):
+    assert "x-kf-review: proposed" in (_git(repo, "show", "kf/run-1:bundle/orders.md"))
+    go(repo, q)
+    c = load_concept(repo / "bundle" / "orders.md")
+    assert c.front["x-kf-review"] == "approved"
+    served = current_concepts(repo / "bundle", now=NOW + timedelta(days=1))
+    assert any(x.path.endswith("orders.md") for x in served)
+
+
+def test_approval_logged_before_merge_and_failure_recorded(repo, q, monkeypatch):
+    import kf.review.review as rv
+
+    real = rv._git
+
+    def flaky(r, *a):
+        if "merge" in a and "--no-ff" in a:
+            raise RuntimeError("boom")
+        return real(r, *a)
+
+    monkeypatch.setattr(rv, "_git", flaky)
+    head = real(repo, "rev-parse", "main")
+    with pytest.raises(RuntimeError):
+        go(repo, q)
+    lines = [json.loads(x) for x in (repo / "state" / "approvals.jsonl").read_text().splitlines()]
+    assert lines[0]["by"] == "alice" and lines[-1]["event"] == "merge_failed"
+    assert real(repo, "rev-parse", "main") == head
+    assert q.list()[0].status == FlagStatus.in_review

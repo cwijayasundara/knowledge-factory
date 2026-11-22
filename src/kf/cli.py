@@ -6,7 +6,7 @@ from pathlib import Path
 from kf.bundle.ci import run_ci
 from kf.flags.models import FlagStatus
 from kf.flags.queue import FlagQueue
-from kf.review.gate import GateResult
+from kf.review.gate import GateResult, Scores, eval_gate
 
 DEFAULT_DB = "state/flags.db"
 
@@ -54,6 +54,14 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _gate_from_scores(scores) -> GateResult | None:
+    """Compute the gate from recorded scores; missing or malformed scores mean no gate result."""
+    try:
+        return eval_gate(Scores(**scores["base"]), Scores(**scores["head"]))
+    except (KeyError, TypeError):
+        return None
+
+
 def _review(args) -> int:
     from datetime import UTC, datetime
 
@@ -74,8 +82,7 @@ def _review(args) -> int:
         return 0
     now = datetime.now(UTC)
     record = rv.read_run_record(repo, args.branch)
-    gate = record.get("gate")
-    gate = GateResult(bool(gate.get("passed")), list(gate.get("reasons", []))) if isinstance(gate, dict) else None
+    gate = _gate_from_scores(record.get("scores"))
     second = rv.Approval(args.second_by, "person", now) if args.second_by else None
     try:
         res = rv.approve_and_merge(

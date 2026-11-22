@@ -1,4 +1,12 @@
-"""Review and merge (spec 5.3): CI, tier, gate, approval, verified stamp, --no-ff merge, flag resolution."""
+"""Review and merge (spec 5.3): CI, tier, gate, approval, verified stamp, --no-ff merge, flag resolution.
+
+Trust model: everything here is local files (state/runs/<run_id>.json, state/approvals.jsonl) and
+anyone with write access to the repo is trusted. The "judge by a different model" rule for Tier 2
+is enforced where judge_ok is written (a later task), not here; this module only reads judge_ok
+(default false). Eval scores are recorded in the run record and the gate is computed from them by
+the caller, never read as a self-asserted pass flag. Tier 3 is humans only: a curator branch
+(kf/*) carrying a Tier 3 change is refused.
+"""
 
 from __future__ import annotations
 
@@ -41,6 +49,10 @@ class GateRequired(ReviewRefused):
 
 
 class JudgeRequired(ReviewRefused):
+    pass
+
+
+class CuratorTier3Refused(ReviewRefused):
     pass
 
 
@@ -142,6 +154,13 @@ def _log_approval(repo: Path, branch: str, a: Approval, test_run: bool, tier: Ti
         f.write(json.dumps(rec) + "\n")
 
 
+def _log_event(repo: Path, rec: dict) -> None:
+    path = repo / "state" / "approvals.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
 def _flag_ids(front: dict) -> list[int]:
     ids = []
     for v in front.get("x-kf-flags") or []:
@@ -203,6 +222,12 @@ def approve_and_merge(
     files = changed_files(repo, branch)
     tier = classify(files, profile=Profile.load(DEFAULT_PROFILE))
     approvals: list[tuple[Approval, str]] = []
+    if tier is Tier.T3:
+        if branch.startswith("kf/"):
+            raise CuratorTier3Refused("tier 3 is humans only: the curator may file a flag, not a diff")
+        if approval is None or approval.kind != "person":
+            if not (approval is not None and test_run):
+                raise ReviewRefused("tier 3 change needs a person approval")
     if tier >= Tier.T1:
         if approval is None:
             raise ReviewRefused(f"tier {int(tier)} change needs a human approval")
@@ -210,14 +235,12 @@ def approve_and_merge(
             reasons = "; ".join(gate.reasons) if gate else "no eval gate result"
             raise GateRequired(f"tier {int(tier)} change needs a passing eval gate: {reasons}")
         approvals.append((approval, "approver"))
-        if tier >= Tier.T2:
+        if tier is Tier.T2:
             second = second_approval is not None and second_approval.by != approval.by
             if second:
                 approvals.append((second_approval, "second"))
             elif not read_run_record(repo, branch).get("judge_ok", False):
                 raise JudgeRequired("tier 2+ needs a second distinct approver or judge_ok on the run record")
-    if tier is Tier.T3 and not (approval and second_approval):
-        raise ReviewRefused("tier 3 changes are human-only: two distinct approvers required")
 
     # 3. Stamp verified on a later branch commit, then merge --no-ff.
     resolved: list[int] = []
@@ -238,6 +261,7 @@ def approve_and_merge(
                         continue
                     c = parse_concept(f.path, p.read_text(encoding="utf-8"))
                     c.front = stamp_verified(c.front, f"human:{who}", approval.at)
+                    c.front["x-kf-review"] = "approved"
                     p.write_text(dump_concept(c), encoding="utf-8")
                     flag_ids.update(_flag_ids(c.front))
                 _git(wt, "add", "-A")
@@ -250,11 +274,16 @@ def approve_and_merge(
             tip = _git(wt, "rev-parse", "HEAD")
         finally:
             _git(repo, "worktree", "remove", "--force", str(wt))
-    _git(repo, *_IDENT, "merge", "--no-ff", "-q", "-m", f"merge {branch} (tier {int(tier)})", tip)
-    sha = _git(repo, "rev-parse", "HEAD")
-
+    # Record approvals first: a merged branch must never lack an approval record.
     for a, role in approvals:
         _log_approval(repo, branch, a, test_run, tier, role)
+    try:
+        _git(repo, *_IDENT, "merge", "--no-ff", "-q", "-m", f"merge {branch} (tier {int(tier)})", tip)
+    except RuntimeError as e:
+        subprocess.run(["git", "merge", "--abort"], cwd=repo, capture_output=True)
+        _log_event(repo, {"branch": branch, "event": "merge_failed", "error": str(e)})
+        raise
+    sha = _git(repo, "rev-parse", "HEAD")
     for fid in sorted(flag_ids):
         if _resolve(queue, fid, branch):
             resolved.append(fid)
