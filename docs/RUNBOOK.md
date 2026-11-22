@@ -56,6 +56,9 @@ non-empty output directory.
    (the default for `eval run`). Agents file flags through `kf_flag` into `state/flags.db`; read them with
    `uv run kf flags list`. The run is starved like the baseline: the same switch applies to both arms, and
    an unstarved agent has nothing to flag.
+   The later G2 measurement uses the same switch on both sides: baseline `--arms graph --starve --heldout`,
+   treatment `--arms graph_kb --starve --heldout` (the bundle is the only difference). `kf eval g2` rejects an
+   unstarved run on either side.
 8. **Stop.** Do not run the curator in Phase 0.
 
 ## Checks that gate a headline

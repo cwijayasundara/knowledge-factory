@@ -54,10 +54,11 @@ def _records(run_dir: str) -> list[dict]:
 def _g2(args) -> int:
     starved_recs, kb_recs = _records(args.starved), _records(args.kb)
     problems = []
+    # Both arms use the starved prompts (spec 9b); the bundle is the only difference.
     if not all(r["starve"] for r in starved_recs):
         problems.append("--starved holds a run that was not starved")
-    if any(r["starve"] for r in kb_recs):
-        problems.append("--kb holds a starved run")
+    if not all(r["starve"] for r in kb_recs):
+        problems.append("--kb holds a run that was not starved")
     seal_now = removal.verify_seal(Path(args.list), Path(args.seal_file))
     recs = starved_recs + kb_recs
     seal_ok = seal_now and all(r["seal_ok"] for r in recs)

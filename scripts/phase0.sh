@@ -96,5 +96,6 @@ run_llm uv run kf eval run --arms graph --starve --heldout --runs "$RUNS"
 step "7. Flag collection: graph_kb on the curation seeds (starved, same switch as the baseline)"
 run_llm uv run kf eval run --arms graph_kb --starve --runs "$RUNS"
 
+echo "Later (not Phase 0): the G2 treatment run is: uv run kf eval run --arms graph_kb --starve --heldout --runs $RUNS (both G2 arms must be starved)."
 step "Stop. Phase 0 exit: flags exist (uv run kf flags list), baseline stored, seal committed."
 echo "Owner: copy the baseline's scores into state/baseline.json (see docs/RUNBOOK.md)."

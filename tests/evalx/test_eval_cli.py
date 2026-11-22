@@ -25,7 +25,7 @@ def _setup(tmp_path, kb_kw=None, **kw):
     lst.write_text("items: []\n")
     removal.seal(lst, seal)
     _run_dir(tmp_path / "s", "graph", 0, starve=True, **kw)
-    _run_dir(tmp_path / "k", "graph_kb", 3, starve=False, **{**kw, **(kb_kw or {})})
+    _run_dir(tmp_path / "k", "graph_kb", 3, starve=True, **{**kw, **(kb_kw or {})})
     return ["eval", "g2", "--starved", str(tmp_path / "s"), "--kb", str(tmp_path / "k"),
             "--state-dir", str(tmp_path / "state"), "--report", str(tmp_path / "g2.md"),
             "--list", str(lst), "--seal-file", str(seal)]
@@ -34,6 +34,24 @@ def _setup(tmp_path, kb_kw=None, **kw):
 def test_g2_cli_writes_report_when_valid(tmp_path, capsys):
     assert cli.main(_setup(tmp_path)) == 0
     assert "PASS" in (tmp_path / "g2.md").read_text()
+
+
+def test_g2_cli_accepts_a_starved_kb_run(tmp_path):
+    assert cli.main(_setup(tmp_path)) == 0
+
+
+def test_g2_cli_rejects_an_unstarved_kb_run(tmp_path, capsys):
+    assert cli.main(_setup(tmp_path, kb_kw=dict(starve=False))) == 2
+    assert "--kb holds a run that was not starved" in capsys.readouterr().err
+    assert not (tmp_path / "g2.md").exists()
+
+
+def test_g2_cli_rejects_an_unstarved_starved_run(tmp_path, capsys):
+    argv = _setup(tmp_path)
+    cfg = tmp_path / "s" / "kf_run.json"
+    cfg.write_text(json.dumps({**json.loads(cfg.read_text()), "starve": False}))
+    assert cli.main(argv) == 2
+    assert "--starved holds a run that was not starved" in capsys.readouterr().err
 
 
 def test_g2_cli_refuses_report_for_scripted_approval(tmp_path):
