@@ -364,10 +364,11 @@ def auto_merge_tier0(repo: Path, branch: str) -> MergeResult:
     why = [r for f in files if (r := _auto_refusal(f, profile))]
     if why:
         raise ReviewRefused("not auto-mergeable: " + "; ".join(why))
+    tip = _git(repo, "rev-parse", f"refs/heads/{branch}")  # merge this exact commit; g2 binds the line to it
     _log_event(repo, {"branch": branch, "by": "auto", "kind": "auto", "role": "auto", "test_run": False,
-                      "tier": 0, "at": datetime.now(UTC).isoformat()})
+                      "tier": 0, "tip": tip, "at": datetime.now(UTC).isoformat()})
     try:
-        _git(repo, *_IDENT, "merge", "--no-ff", "-q", "-m", f"merge {branch} (tier 0, auto)", branch)
+        _git(repo, *_IDENT, "merge", "--no-ff", "-q", "-m", f"merge {branch} (tier 0, auto)", tip)
     except RuntimeError as e:
         subprocess.run(["git", "merge", "--abort"], cwd=repo, capture_output=True)
         _log_event(repo, {"branch": branch, "event": "merge_failed", "error": str(e)})

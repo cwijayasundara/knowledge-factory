@@ -43,9 +43,12 @@ def direct(repo: Path, files: dict[str, str], msg="direct") -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
-def record(repo: Path, run_id: str) -> None:
+def record(repo: Path, run_id: str, head: str | None = None) -> None:
+    """The run record with the gate provenance kf eval gate writes (head_commit: the branch tip gated)."""
     (repo / "state" / "runs").mkdir(parents=True, exist_ok=True)
-    (repo / "state" / "runs" / f"{run_id}.json").write_text(json.dumps({"run_id": run_id, "status": "done"}))
+    head = head or _git(repo, "rev-parse", f"refs/heads/kf/{run_id}")
+    (repo / "state" / "runs" / f"{run_id}.json").write_text(json.dumps(
+        {"run_id": run_id, "status": "done", "gate": {"split": "curation", "head_commit": head}}))
 
 
 def merge(repo: Path, name: str, tmp: Path) -> str:
@@ -167,3 +170,69 @@ def test_the_seed_must_be_an_ancestor(repo, tmp_path):
     _git(repo, "checkout", "-q", "main")
     k = direct(repo, {"docs/x.md": "x\n"})
     assert any("not an ancestor" in p for p in check(repo, other, k))
+
+
+def test_a_hand_merge_of_another_branch_reusing_an_approval_fails(repo, tmp_path):
+    """Case A: kf/run-1 was approved; a hand merge of a different branch with kf/run-1's subject reuses it."""
+    s = seed(repo)
+    branch(repo, "kf/run-1", {"bundle/orders.md": concept()})
+    record(repo, "run-1")
+    merge(repo, "kf/run-1", tmp_path)
+    branch(repo, "other", {"bundle/items.md": concept("Items")})
+    _git(repo, "merge", "--no-ff", "-q", "-m", "merge kf/run-1 (tier 1)", "other")
+    k = _git(repo, "rev-parse", "HEAD")
+    problems = check(repo, s, k)
+    assert any(k[:12] in p for p in problems), problems
+
+
+def test_a_merge_whose_tip_is_not_the_gated_head_fails(repo, tmp_path):
+    s = seed(repo)
+    branch(repo, "kf/run-1", {"bundle/orders.md": concept()})
+    record(repo, "run-1", head="0" * 40)
+    k = merge(repo, "kf/run-1", tmp_path)
+    assert any("gate" in p and "head" in p for p in check(repo, s, k))
+
+
+def test_a_lookalike_curator_actor_fails(repo, tmp_path):
+    s = seed(repo)
+    branch(repo, "kf/run-1", {"bundle/orders.md": concept(by="kf-curatorX/1")})
+    record(repo, "run-1")
+    k = merge(repo, "kf/run-1", tmp_path)
+    assert any("kf-curatorX" in p for p in check(repo, s, k))
+
+
+def test_a_legit_deletion_by_a_kf_branch_passes(repo, tmp_path):
+    branch(repo, "kf/run-1", {"bundle/orders.md": concept()})
+    record(repo, "run-1")
+    merge(repo, "kf/run-1", tmp_path)
+    s = _git(repo, "rev-parse", "HEAD")  # a seed holding a (non-curator) concept the next branch deletes
+    _git(repo, "checkout", "-q", "-b", "kf/run-2", "main")
+    _git(repo, "rm", "-q", "bundle/orders.md")
+    _git(repo, "commit", "-q", "-m", "delete")
+    _git(repo, "checkout", "-q", "main")
+    record(repo, "run-2")
+    # review.py refuses tier 3 (removal) on kf/*, so the merge and its approval line are written the way
+    # approve_and_merge writes them (no stamp commit: nothing left to stamp).
+    _git(repo, "merge", "--no-ff", "-q", "-m", "merge kf/run-2 (tier 3)", "kf/run-2")
+    with (repo / "state" / "approvals.jsonl").open("a") as f:
+        f.write(json.dumps({"branch": "kf/run-2", "by": "alice", "kind": "person", "role": "approver",
+                            "test_run": False, "tier": 3, "at": NOW.isoformat()}) + "\n")
+    k = _git(repo, "rev-parse", "HEAD")
+    assert [p for p in check(repo, s, k) if "pristine" not in p] == []
+
+
+def test_an_auto_merge_of_a_different_tip_fails(repo, tmp_path):
+    s = seed(repo)
+    branch(repo, "kf/run-1", {"bundle/orders.md": concept()})
+    record(repo, "run-1")
+    merge(repo, "kf/run-1", tmp_path)
+    text = (repo / "bundle" / "orders.md").read_text()
+    branch(repo, "kf/run-2", {"bundle/orders.md": text.replace("---\n# Orders", "x-kf-usage: 3\n---\n# Orders")})
+    record(repo, "run-2")
+    auto_merge_tier0(repo, "kf/run-2")
+    lines = (repo / "state" / "approvals.jsonl").read_text().splitlines()
+    auto = json.loads(lines[-1])
+    assert auto["kind"] == "auto" and auto["tip"] == _git(repo, "rev-parse", "kf/run-2")
+    lines[-1] = json.dumps({**auto, "tip": "0" * 40})
+    (repo / "state" / "approvals.jsonl").write_text("\n".join(lines) + "\n")
+    assert any("tip" in p for p in check(repo, s, _git(repo, "rev-parse", "HEAD")))

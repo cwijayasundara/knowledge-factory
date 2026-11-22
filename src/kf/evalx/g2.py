@@ -217,6 +217,12 @@ def _front(repo: Path, ref: str, path: str) -> tuple[dict, str] | None:
     return c.front, c.body
 
 
+def _blob(repo: Path, ref: str, path: str) -> str | None:
+    """The blob id of path at ref, None when the path is absent there."""
+    p = _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}:{path}")
+    return p.stdout.strip() if p.returncode == 0 else None
+
+
 def _bundle_changes(repo: Path, a: str, b: str) -> list[tuple[str, str]]:
     """(status letter, path) of every bundle/ change from a to b."""
     out = _git(repo, "diff", "--name-status", "--no-renames", "-z", a, b, "--", BUNDLE_DIR + "/").stdout
@@ -240,14 +246,20 @@ def _merge_problems(repo: Path, m: str, p1: str, p2: str, changes: list[tuple[st
         out.append(f"merge {short} of {branch} has no run record {runs_dir / (branch.removeprefix('kf/') + '.json')}")
     lines = [a for a in approvals if a.get("branch") == branch]
     if auto:
-        if not any(a.get("kind") == "auto" for a in lines):
+        autos = [a for a in lines if a.get("kind") == "auto"]
+        if not autos:
             out.append(f"merge {short} of {branch} has no Tier 0 auto line in approvals.jsonl")
+        elif not any(a.get("tip") == p2 for a in autos):
+            out.append(f"merge {short} of {branch}: no Tier 0 auto line records the merged tip {p2[:12]} "
+                       "(an auto line without a tip predates tip binding: re-merge with the current kf)")
     elif not any(a.get("kind") in ("person", "scripted") and a.get("role") == "approver" for a in lines):
         out.append(f"merge {short} of {branch} has no approval in approvals.jsonl")
     # The pre-stamp tip: kf review stamps on one extra branch commit (verified, x-kf-review only).
     pre = p2
     p2_subject = _git(repo, "log", "-1", "--format=%s%x00%an%x00%P", p2).stdout.strip().split("\0")
-    if p2_subject[0].startswith(_STAMP_MSG) and p2_subject[1] == "kf-review" and len(p2_subject[2].split()) == 1:
+    stamped = (p2_subject[0].startswith(_STAMP_MSG) and p2_subject[1] == "kf-review"
+               and len(p2_subject[2].split()) == 1)
+    if stamped:
         if auto:
             out.append(f"merge {short}: a Tier 0 auto-merge carries a stamp commit {p2[:12]}")
         pre = p2_subject[2].strip()
@@ -257,15 +269,27 @@ def _merge_problems(repo: Path, m: str, p1: str, p2: str, changes: list[tuple[st
             if code != "M" or before is None or after is None or before[1] != after[1] or {
                     k for k in before[0].keys() | after[0].keys() if before[0].get(k) != after[0].get(k)} - _STAMP_KEYS:
                 out.append(f"stamp commit {p2[:12]} changes more than the review stamp in {path}")
+    if not auto:
+        # Bind the approval to the commit: the gated head (kf eval gate's record) is the pre-stamp tip.
+        try:
+            rec = json.loads((runs_dir / f"{branch.removeprefix('kf/')}.json").read_text())
+        except (OSError, ValueError):
+            rec = {}
+        head = (rec.get("gate") or {}).get("head_commit") if isinstance(rec, dict) else None
+        if head != pre:
+            out.append(f"merge {short} of {branch}: the merged tip {pre[:12]} is not the gated head "
+                       f"{str(head)[:12]} in the run record's gate.head_commit")
+        if not stamped and any(code != "D" and _is_concept(path) for code, path in changes):
+            out.append(f"merge {short} of {branch} adds or modifies concepts but has no kf review stamp commit")
     for code, path in changes:
-        if _git(repo, "rev-parse", f"{m}:{path}").stdout != _git(repo, "rev-parse", f"{p2}:{path}").stdout:
+        if _blob(repo, m, path) != _blob(repo, p2, path):
             out.append(f"merge {short} changes {path} beyond the merged branch tip {p2[:12]}")
         if code == "D" or not _is_concept(path):
             continue
         got = _front(repo, pre, path)
         gen = (got[0] if got else {}).get("generated")
         by = str(gen.get("by", "")) if isinstance(gen, dict) else ""
-        if not by.startswith("kf-curator"):
+        if not by.startswith("kf-curator/"):
             out.append(f"merge {short} of {branch}: {path} was not written by kf-curator before the stamp "
                        f"(generated.by {by or 'missing'!r})")
     return out

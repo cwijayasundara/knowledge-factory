@@ -14,6 +14,7 @@ LIST = 'items:\n  - id: a\n    file: prompts/autorca.md\n    match: "alias hint"
 SEED = "---\ntitle: S\ngenerated:\n  by: seed/1\n  at: '2026-11-01T00:00:00Z'\n---\n# S\n"
 CURATED = ("---\ntitle: C\ngenerated:\n  by: kf-curator/1\n  at: '2026-11-02T00:00:00Z'\n"
            "verified:\n- by: human:{who}\n  at: '2026-11-03T00:00:00Z'\n---\n# C\n")
+UNSTAMPED = ("---\ntitle: C\ngenerated:\n  by: kf-curator/1\n  at: '2026-11-02T00:00:00Z'\n---\n# C\n")
 LATER = "2099-01-01T00:00:00+00:00"
 CLOCK = "2026-11-20T00:00:00+00:00"
 
@@ -39,14 +40,21 @@ class World:
         self.seal = self.repo / "integration" / "removal.seal"
         removal.seal(self.list, self.seal, author="olive")
         self.commit_all("seal")
+        # As kf review merges: the curator's commit (gated), a kf-review stamp commit, merge --no-ff.
         git(self.repo, "checkout", "-q", "-b", "kf/a")
-        (self.repo / "bundle" / "c.md").write_text(CURATED.format(who="alice"))
+        (self.repo / "bundle" / "c.md").write_text(UNSTAMPED)
         self.commit_all("curated")
+        gated = git(self.repo, "rev-parse", "HEAD")
+        (self.repo / "bundle" / "c.md").write_text(CURATED.format(who="alice"))
+        git(self.repo, "add", "-A")
+        subprocess.run(["git", "-c", "user.name=kf-review", "-c", "user.email=kf-review@localhost", "commit", "-q",
+                        "-m", "review: stamp verified by human:alice"], cwd=self.repo, check=True)
         git(self.repo, "checkout", "-q", "main")
-        git(self.repo, "merge", "--no-ff", "-q", "-m", "merge kf/a (tier 1)", "kf/a")  # as kf review merges
+        git(self.repo, "merge", "--no-ff", "-q", "-m", "merge kf/a (tier 1)", "kf/a")
         self.kb = git(self.repo, "rev-parse", "HEAD")
         (tmp / "state" / "runs").mkdir(parents=True)
-        (tmp / "state" / "runs" / "a.json").write_text(json.dumps({"run_id": "a", "status": "done"}))
+        (tmp / "state" / "runs" / "a.json").write_text(json.dumps(
+            {"run_id": "a", "status": "done", "gate": {"split": "curation", "head_commit": gated}}))
         self.sha = removal.digest(self.list)
         self.snap = {}
         for name, files in (("kb", {"a.md": SEED, "c.md": CURATED.format(who="alice")}), ("seed", {"a.md": SEED})):
