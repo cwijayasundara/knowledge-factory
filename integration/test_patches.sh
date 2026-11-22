@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Apply the e2ekg patches to a fresh clone in a temporary directory and run the tests the
-# patches add (tests/agent/test_kf_wiring.py, tests/evals/test_kb_arm.py). Extra arguments go
+# patches add (tests/agent/test_kf_wiring.py, tests/evals/test_kb_arm.py,
+# tests/agent/test_starve.py). Extra arguments go
 # to pytest, e.g. `bash integration/test_patches.sh tests/agent tests/evals` for the full suites.
 set -euo pipefail
 unset VIRTUAL_ENV
@@ -14,5 +15,5 @@ cd "$TMP/e2ekg"
 if (( $# )); then
   uv run pytest -q "$@"
 else
-  uv run pytest -q tests/agent/test_kf_wiring.py tests/evals/test_kb_arm.py
+  uv run pytest -q tests/agent/test_kf_wiring.py tests/evals/test_kb_arm.py tests/agent/test_starve.py
 fi

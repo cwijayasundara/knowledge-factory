@@ -1,0 +1,17 @@
+# Knowledge-starved baseline: the removal list (spec section 7, 9b, 9c).
+#
+# TEMPLATE. The owner writes the real items, then seals the list before the first measured
+# run with `kf seal` and commits integration/removal.seal on its own. `kf seal --verify` must
+# pass for every measured run; the list is opened only after the measured run.
+#
+# Each item deletes `match` (exact text, every occurrence) from one e2ekg prompt file, for every
+# LLM arm alike (e2ekg patch 0003, env E2EKG_STARVE=<path to this file>). e2ekg fails loudly if
+# a match is not found in its file. Only knowledge derivable from raw/as-of data may be removed:
+# why_derivable_from must name where (catalog, logs, tags). All four keys are required.
+#
+# items:
+#   - id: example-alias-hint
+#     file: prompts/raw_only.md
+#     match: ", in how they spell an application's name (aliases, instance-suffixed service names)"
+#     why_derivable_from: "catalog: raw/catalog/apps.yaml lists every application's aliases"
+items: []

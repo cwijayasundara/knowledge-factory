@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from kf.bundle.ci import run_ci
+from kf.evalx import removal
 from kf.flags.models import FlagStatus
 from kf.flags.queue import FlagQueue
 from kf.review.gate import GateResult, Scores, eval_gate
@@ -39,7 +40,13 @@ def main(argv: list[str] | None = None) -> int:
         if name == "reject":
             sp.add_argument("--by", required=True)
             sp.add_argument("--reason", default="")
+    sl = sub.add_parser("seal", help="seal the starved baseline's removal list")
+    sl.add_argument("--verify", action="store_true", help="exit 1 if the list differs from the seal")
+    sl.add_argument("--list", default=str(removal.DEFAULT_LIST))
+    sl.add_argument("--seal-file", default=str(removal.DEFAULT_SEAL))
     args = p.parse_args(argv)
+    if args.cmd == "seal":
+        return _seal(args)
     if args.cmd == "review":
         return _review(args)
     if args.cmd == "ci":
@@ -51,6 +58,17 @@ def main(argv: list[str] | None = None) -> int:
         status = FlagStatus(args.status) if args.status else None
         for f in FlagQueue(args.db).list(status):
             print(f"{f.id}\t{f.status.value}\t{f.kind.value}\t{f.target or '-'}\t{f.summary}")
+    return 0
+
+
+def _seal(args) -> int:
+    if args.verify:
+        if removal.verify_seal(Path(args.list), Path(args.seal_file)):
+            print("seal ok")
+            return 0
+        print(f"seal mismatch: {args.list} vs {args.seal_file}", file=sys.stderr)
+        return 1
+    print(removal.seal(Path(args.list), Path(args.seal_file)))
     return 0
 
 

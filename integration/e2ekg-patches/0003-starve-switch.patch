@@ -1,0 +1,142 @@
+From ff28926437a7f2ba34221c68258b352bf8f0709c Mon Sep 17 00:00:00 2001
+From: kf integration <kf@localhost>
+Date: Sun, 22 Nov 2026 07:56:47 +0000
+Subject: [PATCH] feat(agent): knowledge-starved switch (E2EKG_STARVE)
+
+With E2EKG_STARVE naming the knowledge factory's removal.yaml, prompt()
+deletes each listed match text from the named prompts/<name>.md, so the
+commander, the specialists, the fast path and the raw-only arm all read
+the same starved prompts. Every item is checked against its file on each
+call: a match that is not found, or a file that is not a prompt, raises.
+Aliases reach the agent only as catalog data through the Resolver, never
+as hint text, so prompt text is all the switch removes. Unset, prompts
+are byte-identical to the files.
+---
+ src/e2ekg/agent/specialists.py | 25 ++++++++++++-
+ tests/agent/test_starve.py     | 64 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 88 insertions(+), 1 deletion(-)
+ create mode 100644 tests/agent/test_starve.py
+
+diff --git a/src/e2ekg/agent/specialists.py b/src/e2ekg/agent/specialists.py
+index a654e9c..3206379 100644
+--- a/src/e2ekg/agent/specialists.py
++++ b/src/e2ekg/agent/specialists.py
+@@ -1,6 +1,7 @@
+ """The AutoRCA agent's seven specialists. Each is a DeepAgents SubAgent with its own prompt
+ (prompts/<name>.md) and its own slice of the graph tools, and records what it concludes as
+ ops:Findings in its own findings graph, which the commander reads back."""
++import os
+ from datetime import datetime
+ from pathlib import Path
+ 
+@@ -11,6 +12,7 @@ from e2ekg.agent.tools import make_tools
+ from e2ekg.graph.store import Store
+ 
+ PROMPTS = Path(__file__).parent / "prompts"
++STARVE_ENV = "E2EKG_STARVE"  # path to the knowledge factory's removal.yaml (starved baseline)
+ 
+ SPECIALISTS: dict[str, list[str]] = {
+     "topology": ["dependency_closure", "trace_edges"],
+@@ -35,7 +37,28 @@ DESCRIPTIONS = {
+ 
+ 
+ def prompt(name: str) -> str:
+-    return (PROMPTS / f"{name}.md").read_text()
++    """prompts/<name>.md; with E2EKG_STARVE set, minus the removal list's texts for that file."""
++    text = (PROMPTS / f"{name}.md").read_text()
++    path = os.environ.get(STARVE_ENV)
++    return starve(name, text, Path(path)) if path else text
++
++
++def starve(name: str, text: str, removal: Path) -> str:
++    """Delete every listed match for prompts/<name>.md from `text`. Every item in the list is
++    checked against its file on each call, so a stale list fails loudly instead of silently
++    removing nothing. Aliases reach the agent only as data (the catalog, via the Resolver), never
++    as a hint text, so prompt text is all the switch removes."""
++    from kf.evalx.removal import RemovalList
++
++    for item in RemovalList.load(removal).items:
++        source = PROMPTS / item.file.removeprefix("prompts/")
++        if not source.is_file():
++            raise ValueError(f"{removal}: item {item.id}: no prompt file {item.file}")
++        if item.match not in source.read_text():
++            raise ValueError(f"{removal}: item {item.id}: match not found in {item.file}")
++        if item.file == f"prompts/{name}.md":
++            text = text.replace(item.match, "")
++    return text
+ 
+ 
+ def build_specialists(store: Store, proc_root: Path, scenario: str, *, llm=None,
+diff --git a/tests/agent/test_starve.py b/tests/agent/test_starve.py
+new file mode 100644
+index 0000000..efbd023
+--- /dev/null
++++ b/tests/agent/test_starve.py
+@@ -0,0 +1,64 @@
++"""The knowledge-starved switch: with E2EKG_STARVE naming a removal list, every listed match
++text is deleted from its prompt file wherever prompt() reads it (the commander, the specialists,
++the fast path and the raw-only arm alike); unset, prompts are byte-identical to the files. A
++match the file does not contain, or a file that is not a prompt, fails loudly."""
++import json
++
++import pytest
++
++from e2ekg.agent.autorca import commander_prompt
++from e2ekg.agent.specialists import PROMPTS, STARVE_ENV, prompt
++
++COMMANDER = (PROMPTS / "autorca.md").read_text()
++MATCH = "Never invent a URI, a time or an application; cite only what a tool returned. "
++LOGS = (PROMPTS / "logs.md").read_text()
++LOGS_MATCH = LOGS.splitlines()[0]
++
++
++def removal(tmp_path, *items) -> str:
++    body = "".join(f"  - id: i{n}\n    file: {f}\n    match: {json.dumps(m)}\n"
++                   f"    why_derivable_from: catalog\n" for n, (f, m) in enumerate(items))
++    p = tmp_path / "removal.yaml"
++    p.write_text("items:\n" + body if items else "items: []\n")
++    return str(p)
++
++
++def test_unset_prompts_are_the_files(monkeypatch):
++    monkeypatch.delenv(STARVE_ENV, raising=False)
++    assert prompt("autorca") == COMMANDER and prompt("logs") == LOGS
++    assert commander_prompt(False) == COMMANDER
++
++
++def test_listed_text_is_removed_from_the_named_prompt(monkeypatch, tmp_path):
++    assert MATCH in COMMANDER and LOGS_MATCH
++    monkeypatch.setenv(STARVE_ENV, removal(tmp_path, ("prompts/autorca.md", MATCH),
++                                           ("prompts/logs.md", LOGS_MATCH)))
++    assert prompt("autorca") == COMMANDER.replace(MATCH, "")
++    assert MATCH not in commander_prompt() and MATCH not in commander_prompt(False, kf=True)
++    assert LOGS_MATCH not in prompt("logs")
++    assert prompt("traces") == (PROMPTS / "traces.md").read_text()
++
++
++def test_an_empty_list_changes_nothing(monkeypatch, tmp_path):
++    monkeypatch.setenv(STARVE_ENV, removal(tmp_path))
++    assert prompt("autorca") == COMMANDER
++
++
++def test_a_stale_match_fails_loudly(monkeypatch, tmp_path):
++    monkeypatch.setenv(STARVE_ENV, removal(tmp_path, ("prompts/autorca.md", "no such text")))
++    with pytest.raises(ValueError, match="not found"):
++        prompt("autorca")
++    with pytest.raises(ValueError, match="not found"):
++        prompt("logs")  # a stale item anywhere in the list stops every prompt
++
++
++def test_an_unknown_prompt_file_fails_loudly(monkeypatch, tmp_path):
++    monkeypatch.setenv(STARVE_ENV, removal(tmp_path, ("prompts/nope.md", "x")))
++    with pytest.raises(ValueError, match="nope"):
++        prompt("autorca")
++
++
++def test_a_missing_list_fails_loudly(monkeypatch, tmp_path):
++    monkeypatch.setenv(STARVE_ENV, str(tmp_path / "absent.yaml"))
++    with pytest.raises(FileNotFoundError):
++        prompt("autorca")
+-- 
+2.50.1 (Apple Git-155)
+
