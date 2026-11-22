@@ -15,8 +15,17 @@ from kf.review.review import Approval
 
 
 def flag_recurrence(queue: FlagQueue) -> int:
-    """Flags that came back after a resolved change: open again with a resolution on record."""
-    return sum(1 for f in queue.list(FlagStatus.open) if f.resolution)
+    """Flags that came back after a resolved change: reopened (open with a resolution on record), or
+    filed again (same kind, target and summary) after an earlier flag was resolved."""
+    flags = queue.list()
+    resolved = {}
+    for f in flags:
+        if f.status is FlagStatus.resolved:
+            resolved.setdefault((f.kind, f.target, f.summary), f.id)
+    reopened = sum(1 for f in flags if f.status is FlagStatus.open and f.resolution)
+    again = sum(1 for f in flags if f.status is not FlagStatus.resolved and not f.resolution
+                and resolved.get((f.kind, f.target, f.summary), f.id) < f.id)
+    return reopened + again
 
 
 def _share(n: int, total: int) -> float | None:
@@ -36,7 +45,7 @@ def curator_metrics(queue: FlagQueue, approvals: list[Approval], *, rejections: 
         "declined_share": _share(by(FlagStatus.declined), n),
         "held_share": _share(by(FlagStatus.held), n),
         "flag_recurrence": flag_recurrence(queue),
-        "approvals_person": sum(1 for a in approvals if a.kind == "person"),
+        "approvals_person": sum(1 for a in approvals if a.kind == "person" and not a.test_run),
         "approvals_scripted": sum(1 for a in approvals if a.kind == "scripted"),
         "review_acceptance_rate": _share(len(approvals), len(approvals) + rejections),
         "median_resolution_hours": statistics.median(resolution_hours) if resolution_hours else None,

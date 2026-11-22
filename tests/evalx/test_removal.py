@@ -1,8 +1,13 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from kf.cli import main
-from kf.evalx.removal import RemovalItem, RemovalList, seal, seed_overlaps, verify_seal
+import json
+
+from kf.evalx import removal
+from kf.evalx.removal import RemovalItem, RemovalList, RemovalRefused, read_seal, seal, seed_overlaps, verify_seal
 
 SAMPLE = """items:
   - id: alias-hints
@@ -16,8 +21,8 @@ ITEM = {"id": "a", "file": "prompts/autorca.md", "match": "x", "why_derivable_fr
 def test_seal_detects_edit(tmp_path):
     p, s = tmp_path / "r.yaml", tmp_path / "removal.seal"
     p.write_text(SAMPLE)
-    h = seal(p, s)
-    assert len(h) == 64 and s.read_text().strip() == h and verify_seal(p, s)
+    h = seal(p, s, author="olive")
+    assert len(h) == 64 and read_seal(s)["sha256"] == h and verify_seal(p, s)
     p.write_text(SAMPLE + "\n# tweak")
     assert not verify_seal(p, s)
 
@@ -66,7 +71,7 @@ def test_seal_refuses_an_invalid_list(tmp_path):
     p, s = tmp_path / "r.yaml", tmp_path / "removal.seal"
     p.write_text("items:\n  - id: a\n    file: prompts/autorca.md\n    match: x\n")
     with pytest.raises(ValidationError):
-        seal(p, s)
+        seal(p, s, author="olive")
     assert not s.exists()
 
 
@@ -74,8 +79,8 @@ def test_cli_seal_and_verify(tmp_path, capsys):
     p, s = tmp_path / "r.yaml", tmp_path / "removal.seal"
     p.write_text(SAMPLE)
     args = ["seal", "--list", str(p), "--seal-file", str(s)]
-    assert main(args) == 0
-    assert capsys.readouterr().out.strip() == s.read_text().strip()
+    assert main([*args, "--author", "olive"]) == 0
+    assert capsys.readouterr().out.strip() == read_seal(s)["sha256"]
     assert main([*args, "--verify"]) == 0
     p.write_text(SAMPLE + "# tweak\n")
     assert main([*args, "--verify"]) == 1
@@ -114,7 +119,7 @@ def _overlapping(tmp_path):
 def test_seal_refuses_with_exit_1_when_the_seed_overlaps(tmp_path, capsys):
     p, b = _overlapping(tmp_path)
     s = tmp_path / "removal.seal"
-    assert main(["seal", "--list", str(p), "--seal-file", str(s), "--bundle", str(b)]) == 1
+    assert main(["seal", "--list", str(p), "--seal-file", str(s), "--bundle", str(b), "--author", "olive"]) == 1
     assert "alias-hints" in capsys.readouterr().err and not s.exists()
 
 
@@ -124,7 +129,65 @@ def test_heldout_eval_refuses_overlap_but_test_run_does_not(tmp_path, capsys, mo
     p, b = _overlapping(tmp_path)
     calls = []
     monkeypatch.setattr(evalx_cli, "run_eval", lambda **kw: calls.append(kw) or kw["run_dir"])
+    monkeypatch.setattr(evalx_cli, "resolve_commit", lambda bundle, ref: "f" * 40)
     base = ["eval", "run", "--heldout", "--list", str(p), "--bundle", str(b), "--state-dir", str(tmp_path / "st")]
     assert main(base) == 1 and not calls
     assert "alias-hints" in capsys.readouterr().err
     assert main([*base, "--test-run"]) == 0 and calls
+
+
+def test_seal_records_hash_author_and_time(tmp_path):
+    p, s = tmp_path / "r.yaml", tmp_path / "removal.seal"
+    p.write_text(SAMPLE)
+    from datetime import UTC, datetime
+
+    h = seal(p, s, author=" olive ", now=datetime(2026, 11, 22, 9, tzinfo=UTC))
+    assert json.loads(s.read_text()) == {"sha256": h, "author": "olive", "sealed_at": "2026-11-22T09:00:00Z"}
+
+
+@pytest.mark.parametrize("author", ["", "  "])
+def test_seal_needs_an_author(tmp_path, author):
+    p, s = tmp_path / "r.yaml", tmp_path / "removal.seal"
+    p.write_text(SAMPLE)
+    with pytest.raises(RemovalRefused):
+        seal(p, s, author=author)
+    assert main(["seal", "--list", str(p), "--seal-file", str(s)]) == 1 and not s.exists()
+
+
+def test_seal_refuses_an_empty_list(tmp_path, capsys):
+    p, s = tmp_path / "r.yaml", tmp_path / "removal.seal"
+    p.write_text("items: []\n")
+    with pytest.raises(RemovalRefused, match="no items"):
+        seal(p, s, author="olive")
+    assert main(["seal", "--list", str(p), "--seal-file", str(s), "--author", "olive"]) == 1
+    assert "no items" in capsys.readouterr().err and not s.exists()
+
+
+def test_seal_refuses_a_list_inside_the_repo_working_tree(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "evalx").mkdir(parents=True)
+    p, s = repo / "evalx" / "removal.yaml", tmp_path / "removal.seal"
+    p.write_text(SAMPLE)
+    with pytest.raises(RemovalRefused, match="outside the repo"):
+        seal(p, s, author="olive", repo=repo)
+    assert not s.exists()
+
+
+def test_the_real_list_defaults_outside_the_repo(monkeypatch, tmp_path):
+    monkeypatch.delenv(removal.LIST_ENV, raising=False)
+    assert removal.default_list() == Path.home() / ".kf" / "removal.yaml"
+    assert not removal.inside_repo(removal.default_list()) or Path.home() == removal.REPO_ROOT
+    monkeypatch.setenv(removal.LIST_ENV, str(tmp_path / "list.yaml"))
+    assert removal.default_list() == tmp_path / "list.yaml"
+
+
+def test_only_the_template_is_tracked():
+    assert removal.TEMPLATE.is_file() and RemovalList.load(removal.TEMPLATE).items == []
+    assert not (removal.REPO_ROOT / "evalx" / "removal.yaml").exists()
+
+
+def test_old_plain_hash_seal_is_not_valid(tmp_path):
+    p, s = tmp_path / "r.yaml", tmp_path / "removal.seal"
+    p.write_text(SAMPLE)
+    s.write_text(removal.digest(p) + "\n")
+    assert read_seal(s) is None and not verify_seal(p, s)

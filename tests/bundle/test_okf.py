@@ -32,3 +32,11 @@ def test_roundtrip_keeps_unknown_keys_and_history(tmp_path):
     p.write_text(out)
     c2 = load_concept(p)
     assert c2.front == c.front and c2.body == c.body
+
+
+def test_scripted_test_stamp_is_not_human_reviewed():
+    from kf.bundle.okf import SCRIPTED_STAMP, is_human_reviewed
+
+    gen = {"by": "kf-curator/1", "at": "2026-01-01T00:00:00Z"}
+    assert not is_human_reviewed({"generated": gen, "verified": [{"by": SCRIPTED_STAMP, "at": "2026-02-01T00:00:00Z"}]})
+    assert is_human_reviewed({"generated": gen, "verified": [{"by": "human:alice", "at": "2026-02-01T00:00:00Z"}]})

@@ -4,18 +4,41 @@ Each item deletes one `match` text from one e2ekg prompt file (`prompts/<name>.m
 LLM arm (e2ekg patch 0003, env E2EKG_STARVE). An item must say where the removed knowledge is
 derivable from (catalog, logs, tags), so the curator is never asked for what it cannot know.
 
-The list is sealed before the first measured run: `seal` writes the sha256 of the file's bytes
-to the seal file, which is committed alone; `verify_seal` checks the list is unchanged since.
+The real list lives outside the repo working tree (spec 9c: the blind reviewer works in the repo
+and must not see it): `--list`, else $KF_REMOVAL_LIST, else ~/.kf/removal.yaml. The tracked
+evalx/removal.template.yaml is only a template. The list is sealed before the first measured run:
+`seal` writes the sha256 of the file's bytes, the list author and the time to the seal file
+(integration/removal.seal), which is committed alone; `verify_seal` checks the list is unchanged
+since. An empty list is refused: it would make a "starved" baseline that starves nothing.
 """
 import hashlib
+import json
+import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-DEFAULT_LIST = Path("evalx/removal.yaml")
-DEFAULT_SEAL = Path("integration/removal.seal")  # state/ is git-ignored; the seal is committed
+REPO_ROOT = Path(__file__).resolve().parents[3]
+LIST_ENV = "KF_REMOVAL_LIST"
+TEMPLATE = REPO_ROOT / "evalx" / "removal.template.yaml"
+DEFAULT_SEAL = REPO_ROOT / "integration" / "removal.seal"  # state/ is git-ignored; the seal is committed
+
+
+class RemovalRefused(ValueError):
+    pass
+
+
+def default_list() -> Path:
+    """$KF_REMOVAL_LIST, else ~/.kf/removal.yaml (outside the repo working tree)."""
+    return Path(os.environ.get(LIST_ENV) or Path.home() / ".kf" / "removal.yaml").expanduser()
+
+
+def inside_repo(path: Path, repo: Path = REPO_ROOT) -> bool:
+    p, r = Path(path).expanduser().resolve(), Path(repo).resolve()
+    return p == r or r in p.parents
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -63,21 +86,48 @@ def seed_overlaps(bundle: Path, removal: RemovalList) -> list[str]:
     return [i.id for i in removal.items if _norm(i.match) and any(_norm(i.match) in t for t in texts)]
 
 
-def _digest(path: Path) -> str:
+def digest(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def seal(path: Path, seal_path: Path = DEFAULT_SEAL) -> str:
-    """Validate the list, write the sha256 of its bytes to `seal_path` and return it."""
-    RemovalList.load(path)
-    h = _digest(path)
+def load_nonempty(path: Path) -> RemovalList:
+    """The list at `path`; RemovalRefused when it has no items."""
+    rl = RemovalList.load(path)
+    if not rl.items:
+        raise RemovalRefused(f"{path}: the removal list has no items (a starved run would starve nothing)")
+    return rl
+
+
+def seal(path: Path, seal_path: Path = DEFAULT_SEAL, *, author: str, now: datetime | None = None,
+         repo: Path = REPO_ROOT) -> str:
+    """Validate the list (non-empty, outside the repo working tree), write its sha256, the list
+    author and the time to `seal_path` and return the hash."""
+    if not author or not author.strip():
+        raise RemovalRefused("the seal needs the list author (kf seal --author NAME)")
+    if inside_repo(path, repo):
+        raise RemovalRefused(f"{path}: the removal list must live outside the repo working tree "
+                             f"(--list, ${LIST_ENV} or ~/.kf/removal.yaml)")
+    load_nonempty(path)
+    h = digest(path)
     seal_path = Path(seal_path)
     seal_path.parent.mkdir(parents=True, exist_ok=True)
-    seal_path.write_text(h + "\n")
+    at = (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    seal_path.write_text(json.dumps({"sha256": h, "author": author.strip(), "sealed_at": at}, indent=2) + "\n")
     return h
+
+
+def read_seal(seal_path: Path = DEFAULT_SEAL) -> dict | None:
+    """The seal's {sha256, author, sealed_at}, or None when it is missing or malformed."""
+    try:
+        data = json.loads(Path(seal_path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("sha256"), str):
+        return None
+    return data
 
 
 def verify_seal(path: Path, seal_path: Path = DEFAULT_SEAL) -> bool:
     """True when `seal_path` holds the sha256 of the list's current bytes."""
-    seal_path = Path(seal_path)
-    return seal_path.is_file() and seal_path.read_text().strip() == _digest(path)
+    s = read_seal(seal_path)
+    return s is not None and Path(path).is_file() and s["sha256"] == digest(path)

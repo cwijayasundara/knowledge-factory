@@ -44,9 +44,12 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("--reason", default="")
     sl = sub.add_parser("seal", help="seal the starved baseline's removal list")
     sl.add_argument("--verify", action="store_true", help="exit 1 if the list differs from the seal")
-    sl.add_argument("--list", default=str(removal.DEFAULT_LIST))
+    sl.add_argument("--list", default=str(removal.default_list()),
+                    help=f"removal list outside the repo (default ${removal.LIST_ENV} or ~/.kf/removal.yaml)")
     sl.add_argument("--seal-file", default=str(removal.DEFAULT_SEAL))
-    sl.add_argument("--bundle", default="bundle", help="seed bundle that must not hold any removed text")
+    sl.add_argument("--author", help="who wrote the list (required to seal; must not approve curator changes)")
+    sl.add_argument("--bundle", default=str(removal.REPO_ROOT / "bundle"),
+                    help="seed bundle that must not hold any removed text")
     ev = sub.add_parser("eval", help="run e2ekg evals, G2 verdict, metrics").add_subparsers(dest="sub", required=True)
     er = ev.add_parser("run", help="run e2ekg eval over the curation or held-out seeds")
     er.add_argument("--arms", default="graph", help="comma list of e2ekg arms, e.g. graph or graph_kb")
@@ -57,16 +60,19 @@ def main(argv: list[str] | None = None) -> int:
     er.add_argument("--test-run", action="store_true", help="mark as a test run (never a headline)")
     er.add_argument("--bundle-commit", help="bundle commit to snapshot (default HEAD)")
     er.add_argument("--now", help="KF_NOW for the kb tools (default: the bundle commit's author date)")
-    er.add_argument("--state-dir", default="state")
-    er.add_argument("--data-base", default=".", help="directory holding data_curation/ and data_heldout/")
-    er.add_argument("--bundle", default="bundle")
-    er.add_argument("--list", default=str(removal.DEFAULT_LIST), help="removal list (for the seed-overlap check)")
-    eg = ev.add_parser("g2", help="G2 verdict from a starved graph run and a graph_kb run")
+    er.add_argument("--state-dir", default=str(removal.REPO_ROOT / "state"))
+    er.add_argument("--data-base", default=str(removal.REPO_ROOT), help="directory holding data_curation/ and data_heldout/")
+    er.add_argument("--bundle", default=str(removal.REPO_ROOT / "bundle"))
+    er.add_argument("--list", default=str(removal.default_list()), help="removal list (for the seed-overlap check)")
+    eg = ev.add_parser("g2", help="G2 verdict: starved graph vs curated graph_kb vs seed-only graph_kb (held-out)")
     eg.add_argument("--starved", required=True, help="run directory of the starved graph run")
-    eg.add_argument("--kb", required=True, help="run directory of the graph_kb run")
-    eg.add_argument("--state-dir", default="state")
-    eg.add_argument("--report", default="reports/g2.md")
-    eg.add_argument("--list", default=str(removal.DEFAULT_LIST))
+    eg.add_argument("--kb", required=True, help="run directory of the graph_kb run on the curated bundle")
+    eg.add_argument("--seed-kb", required=True,
+                    help="run directory of the seed-only control: graph_kb, starved, on the pristine seed commit")
+    eg.add_argument("--state-dir", default=str(removal.REPO_ROOT / "state"))
+    eg.add_argument("--repo", default=str(removal.REPO_ROOT), help="the bundle's git repo")
+    eg.add_argument("--report", default=None, help="default reports/g2-<date>.md")
+    eg.add_argument("--list", default=str(removal.default_list()))
     eg.add_argument("--seal-file", default=str(removal.DEFAULT_SEAL))
     em = ev.add_parser("metrics", help="curator and corpus metrics as JSON")
     em.add_argument("--state-dir", default="state")
@@ -121,11 +127,16 @@ def _seal(args) -> int:
             return 0
         print(f"seal mismatch: {args.list} vs {args.seal_file}", file=sys.stderr)
         return 1
-    overlaps = removal.seed_overlaps(Path(args.bundle), removal.RemovalList.load(Path(args.list)))
-    if overlaps:
-        print(f"refused: the bundle holds removal items: {', '.join(overlaps)}", file=sys.stderr)
+    try:
+        if not args.author:
+            raise removal.RemovalRefused("the seal needs the list author: kf seal --author NAME")
+        overlaps = removal.seed_overlaps(Path(args.bundle), removal.load_nonempty(Path(args.list)))
+        if overlaps:
+            raise removal.RemovalRefused(f"the bundle holds removal items: {', '.join(overlaps)}")
+        print(removal.seal(Path(args.list), Path(args.seal_file), author=args.author))
+    except (removal.RemovalRefused, OSError) as e:
+        print(f"refused: {e}", file=sys.stderr)
         return 1
-    print(removal.seal(Path(args.list), Path(args.seal_file)))
     return 0
 
 

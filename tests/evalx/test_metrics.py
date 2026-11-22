@@ -62,3 +62,20 @@ def test_corpus_metrics(tmp_path):
     assert m["citation_coverage"] == 1 / 3 and m["human_reviewed_ratio"] == 1 / 3
     assert m["stale_ratio"] == 1 / 3
     assert m["orphans"] == 1 and m["broken_links"] == 1
+
+
+def test_flag_recurrence_counts_a_flag_filed_again_after_resolution(tmp_path):
+    q = FlagQueue(tmp_path / "q.db")
+    first = q.add(FlagIn(kind="missing", summary="alias TMS", target="domain/a.md"), agent_id="a", run_id="r1",
+                  scenario="hero")
+    for s in RESOLVE:
+        q.set_status(first.id, s, resolution={"merged": "kf/x"} if s is FlagStatus.resolved else None)
+    q.add(FlagIn(kind="missing", summary="alias TMS", target="domain/a.md"), agent_id="a", run_id="r2",
+          scenario="hero")
+    assert flag_recurrence(q) == 1
+
+
+def test_person_approvals_exclude_test_runs(tmp_path):
+    q = FlagQueue(tmp_path / "q.db")
+    m = curator_metrics(q, [Approval("a", "person", NOW), Approval("b", "person", NOW, test_run=True)])
+    assert m["approvals_person"] == 1

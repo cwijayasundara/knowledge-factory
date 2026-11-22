@@ -11,11 +11,13 @@ from kf.review.review import Approval
 
 NOW = datetime(2026, 6, 1, tzinfo=UTC)
 PERSON = Approval("alice", "person", NOW)
-S, K = Scores(4, 9, 0, 0), Scores(6, 9, 0, 0)
+S, K, SEED = Scores(4, 9, 0, 0), Scores(6, 9, 0, 0), Scores(5, 9, 0, 0)
 
 
-def verdict(starved=S, kb=K, approvals=(PERSON,), seal_ok=True, heldout=True, coverage=None) -> G2Result:
-    return g2_verdict(starved, kb, approvals=list(approvals), seal_ok=seal_ok, heldout=heldout, coverage=coverage)
+def verdict(starved=S, kb=K, seed=SEED, approvals=(PERSON,), seal_ok=True, heldout=True, coverage=None,
+            list_author=None) -> G2Result:
+    return g2_verdict(starved, kb, seed=seed, approvals=list(approvals), seal_ok=seal_ok, heldout=heldout,
+                      coverage=coverage, list_author=list_author)
 
 
 def test_g2_invalid_with_scripted_approval():
@@ -53,6 +55,29 @@ def test_g2_fails_at_plus_one():
 
 def test_g2_fails_if_trap_rises():
     assert not verdict(kb=Scores(8, 9, 1, 0)).passed
+
+
+def test_g2_fails_unless_kb_beats_the_seed_only_control():
+    v = verdict(seed=Scores(6, 9, 0, 0))
+    assert v.valid and not v.passed and any("seed-only" in r for r in v.reasons)
+
+
+def test_g2_fails_if_trap_rises_against_the_seed_only_control():
+    assert not verdict(kb=Scores(8, 9, 1, 0), starved=Scores(4, 9, 1, 0), seed=Scores(5, 9, 0, 0)).passed
+
+
+def test_g2_invalid_on_unequal_control_runs():
+    assert not verdict(seed=Scores(5, 6, 0, 0)).valid
+
+
+def test_g2_invalid_with_test_run_approval():
+    v = verdict(approvals=[Approval("alice", "person", NOW, test_run=True)])
+    assert not v.valid and any("test-run" in r for r in v.reasons)
+
+
+def test_g2_invalid_when_the_list_author_approved():
+    v = verdict(approvals=[Approval("Alice", "person", NOW)], list_author="alice ")
+    assert not v.valid and any("author" in r for r in v.reasons)
 
 
 def test_g2_fails_if_control_fp_rises():

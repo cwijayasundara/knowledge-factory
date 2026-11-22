@@ -1,12 +1,24 @@
-"""G2 verdict (spec 9b): graph_kb after curation vs the starved graph arm, on held-out seeds."""
+"""G2 verdict (spec 9b, 9c): graph_kb after curation vs the starved graph arm, on held-out seeds,
+with a seed-only control (graph_kb starved on the pristine seed bundle) so the curator is the only
+change that can earn the gain.
+
+A G2 measurement is three run sets of kf_run.json records (one per seed): starved graph, graph_kb
+on the curated bundle, graph_kb on the seed bundle. It is valid only when the sets are comparable
+(same data roots, scenarios, runs, e2ekg commit, per-scenario row counts; one bundle commit per
+set), sealed (each run read a copy of the committed seal's list, sealed before the first run),
+held-out, not test runs, and reviewed by a person who is not the list author, with no scripted
+approval in the approvals log or in the measured bundle.
+"""
 
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from kf.bundle.okf import SCRIPTED_STAMP, parse_concept
 from kf.review.gate import Scores
 from kf.review.review import Approval
 
@@ -49,40 +61,157 @@ def read_approval_records(path: Path) -> list[dict]:
 
 
 def to_approvals(records: list[dict]) -> list[Approval]:
-    return [Approval(r["by"], r["kind"], datetime.fromisoformat(r["at"]).astimezone(UTC)) for r in records]
+    return [Approval(r["by"], r["kind"], datetime.fromisoformat(r["at"]).astimezone(UTC), bool(r.get("test_run")))
+            for r in records]
 
 
 def read_approvals(path: Path) -> list[Approval]:
     return to_approvals(read_approval_records(path))
 
 
-def coverage_problems(starved_recs: list[dict], kb_recs: list[dict]) -> list[str]:
-    """Why two runs' kf_run.json records are not comparable: seeds, scenarios, runs, exit codes."""
-    def keys(recs: list[dict]) -> list[tuple]:
-        return sorted((Path(r.get("data_root", "")).name, tuple(r.get("scenarios", [])), r.get("runs")) for r in recs)
+def _ident(who: str | None) -> str:
+    return str(who or "").strip().removeprefix("human:").strip().casefold()
 
-    sk, kk = keys(starved_recs), keys(kb_recs)
+
+def coverage_problems(starved_recs: list[dict], kb_recs: list[dict], seed_recs: list[dict] | None = None,
+                      rows: dict[str, dict] | None = None) -> list[str]:
+    """Why the run sets' kf_run.json records are not comparable: data roots, scenarios, runs, exit
+    codes, e2ekg commit, one bundle commit per kb set, per-(data root, scenario) scored rows."""
+    sets = {"starved": starved_recs, "kb": kb_recs}
+    if seed_recs is not None:
+        sets["seed-kb"] = seed_recs
+
+    def keys(recs: list[dict]) -> list[tuple]:
+        return sorted((str(r.get("data_root", "")), tuple(r.get("scenarios", [])), r.get("runs")) for r in recs)
+
+    ks = {n: keys(r) for n, r in sets.items()}
+    ref = ks["starved"]
     out = []
-    if [k[0] for k in sk] != [k[0] for k in kk]:
-        out.append("the runs used different seeds")
-    if [k[1] for k in sk] != [k[1] for k in kk]:
-        out.append("the runs used different scenarios")
-    if [k[2] for k in sk] != [k[2] for k in kk]:
-        out.append("the runs used different runs-per-scenario")
-    if any(r.get("returncode") != 0 for r in starved_recs + kb_recs):
+    for i, what in ((0, "data roots (seeds)"), (1, "scenarios"), (2, "runs-per-scenario")):
+        if any([k[i] for k in v] != [k[i] for k in ref] for v in ks.values()):
+            out.append(f"the runs used different {what}")
+    every = [r for recs in sets.values() for r in recs]
+    if any(r.get("returncode") != 0 for r in every):
         out.append("an e2ekg eval invocation exited nonzero")
+    shas = {r.get("e2ekg_sha") for r in every}
+    if None in shas or len(shas) != 1:
+        out.append(f"the runs used different or unrecorded e2ekg commits: {sorted(map(str, shas))}")
+    for name in ("kb", "seed-kb"):
+        if name in sets and len({r.get("commit") for r in sets[name]}) != 1:
+            out.append(f"--{name} runs used more than one bundle commit")
+    if rows:
+        ref_rows = rows.get("starved")
+        for name, r in rows.items():
+            if r != ref_rows:
+                out.append(f"unequal scored runs per seed and scenario: starved {sorted(ref_rows.items())}, "
+                           f"{name} {sorted(r.items())}")
     return out
 
 
-def g2_verdict(starved: Scores, kb: Scores, *, approvals: list[Approval], seal_ok: bool, heldout: bool,
-               coverage: list[str] | None = None) -> G2Result:
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+
+def seal_problems(recs: list[dict], seal_file: Path) -> tuple[list[str], dict | None]:
+    """The seal must be committed and clean in git, sealed before the first run started, and equal
+    to the hash of the list copy every run read (and recorded)."""
+    from kf.evalx import removal
+
+    seal_file = Path(seal_file).resolve()
+    info = removal.read_seal(seal_file)
+    if info is None:
+        return [f"removal list seal missing or malformed: {seal_file}"], None
+    out = []
+    top = _git(seal_file.parent, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        out.append(f"the seal {seal_file} is not in a git repo")
+    else:
+        root = Path(top.stdout.strip())
+        rel = seal_file.relative_to(root.resolve()).as_posix()
+        tracked = _git(root, "ls-files", "--error-unmatch", "--", rel).returncode == 0
+        dirty = _git(root, "status", "--porcelain", "--", rel).stdout.strip()
+        if not tracked or dirty:
+            out.append(f"the seal {rel} is not committed and clean")
+        at = _git(root, "log", "-1", "--format=%cI", "--", rel).stdout.strip()
+        starts = [datetime.fromisoformat(r["started_at"]) for r in recs if r.get("started_at")]
+        if len(starts) != len(recs):
+            out.append("a run has no recorded start time")
+        elif at and datetime.fromisoformat(at) >= min(starts):
+            out.append(f"the seal was committed at {at}, not before the first run ({min(starts).isoformat()})")
+    for r in recs:
+        if r.get("seal_hash") != info["sha256"] or r.get("removal_sha256") != info["sha256"]:
+            out.append(f"{r.get('_dir', 'a run')} did not run on the sealed list")
+            break
+    for r in recs:
+        copy = Path(r.get("_dir", "")) / "removal.yaml"
+        try:
+            ok = copy.is_file() and removal.digest(copy) == info["sha256"] and removal.load_nonempty(copy)
+        except (ValueError, OSError):
+            ok = False
+        if not ok:
+            out.append(f"{r.get('_dir', 'a run')}: no non-empty copy of the sealed list in the run dir")
+            break
+    return out, info
+
+
+def snapshot_problems(recs: list[dict], author: str | None) -> list[str]:
+    """The measured bundle snapshots must hold no scripted stamp and no stamp by the list author."""
+    out = []
+    for snap in sorted({r.get("snapshot") or "" for r in recs}):
+        if not snap or not Path(snap).is_dir():
+            out.append(f"bundle snapshot missing: {snap or '(none recorded)'}")
+            continue
+        for f in sorted(Path(snap).rglob("*.md")):
+            try:
+                front = parse_concept(str(f), f.read_text(encoding="utf-8")).front
+            except (ValueError, OSError, UnicodeDecodeError):
+                continue
+            for v in front.get("verified") or []:
+                by = str(v.get("by", "")) if isinstance(v, dict) else ""
+                if by == SCRIPTED_STAMP:
+                    out.append(f"{f.relative_to(snap)} carries a scripted approval stamp")
+                elif author and by.startswith("human:") and _ident(by) == _ident(author):
+                    out.append(f"{f.relative_to(snap)} was approved by the removal list author")
+    return out
+
+
+def pristine_problems(repo: Path, seed_commit: str | None, kb_commit: str | None) -> list[str]:
+    """The seed-only control must run on a seed bundle commit (no curator-written concept) that is
+    an ancestor of the curated commit, and differ from it."""
+    if not seed_commit or not kb_commit:
+        return ["the seed-only control or the kb run has no bundle commit"]
+    if seed_commit == kb_commit:
+        return ["the seed-only control ran on the curated bundle commit (nothing was curated)"]
+    if _git(repo, "merge-base", "--is-ancestor", seed_commit, kb_commit).returncode != 0:
+        return [f"the seed commit {seed_commit[:12]} is not an ancestor of the kb commit {kb_commit[:12]}"]
+    ls = _git(repo, "ls-tree", "-r", "--name-only", seed_commit, "--", "bundle/")
+    for path in ls.stdout.splitlines():
+        if not path.endswith(".md"):
+            continue
+        text = _git(repo, "show", f"{seed_commit}:{path}").stdout
+        try:
+            front = parse_concept(path, text).front
+        except ValueError:
+            continue
+        gen = front.get("generated")
+        if isinstance(gen, dict) and str(gen.get("by", "")).startswith("kf-curator"):
+            return [f"the seed-only control's bundle is not pristine: {path} was written by the curator"]
+    return []
+
+
+def g2_verdict(starved: Scores, kb: Scores, *, seed: Scores, approvals: list[Approval], seal_ok: bool,
+               heldout: bool, coverage: list[str] | None = None, list_author: str | None = None) -> G2Result:
     invalid = list(coverage or [])
-    if starved.runs != kb.runs:
-        invalid.append(f"unequal scored runs: starved {starved.runs}, kb {kb.runs}")
+    if not (starved.runs == kb.runs == seed.runs):
+        invalid.append(f"unequal scored runs: starved {starved.runs}, kb {kb.runs}, seed-kb {seed.runs}")
     if not seal_ok:
         invalid.append("removal list seal missing or broken")
     if any(a.kind == "scripted" for a in approvals):
         invalid.append("a scripted approval is in the record")
+    if any(a.test_run for a in approvals):
+        invalid.append("a test-run approval is in the record")
+    if list_author and any(a.kind == "person" and _ident(a.by) == _ident(list_author) for a in approvals):
+        invalid.append("the removal list author approved a curator change (the reviewer must be blind)")
     if not heldout:
         invalid.append("not measured on held-out seeds")
     if invalid:
@@ -90,8 +219,11 @@ def g2_verdict(starved: Scores, kb: Scores, *, approvals: list[Approval], seal_o
     reasons = []
     if kb.top1 - starved.top1 < MIN_GAIN_RUNS:
         reasons.append(f"top1 gain {kb.top1 - starved.top1} (starved {starved.top1}, kb {kb.top1}); needs >= {MIN_GAIN_RUNS}")
-    if kb.trap > starved.trap:
-        reasons.append(f"trap rose {starved.trap} -> {kb.trap}")
-    if kb.control_fp > starved.control_fp:
-        reasons.append(f"control false positives rose {starved.control_fp} -> {kb.control_fp}")
+    if kb.top1 <= seed.top1:
+        reasons.append(f"top1 does not beat the seed-only control (seed-kb {seed.top1}, kb {kb.top1})")
+    for name, ref in (("starved", starved), ("seed-kb", seed)):
+        if kb.trap > ref.trap:
+            reasons.append(f"trap rose {ref.trap} -> {kb.trap} vs {name}")
+        if kb.control_fp > ref.control_fp:
+            reasons.append(f"control false positives rose {ref.control_fp} -> {kb.control_fp} vs {name}")
     return G2Result(True, not reasons, reasons)

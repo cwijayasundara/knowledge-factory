@@ -61,6 +61,7 @@ class Approval:
     by: str
     kind: Literal["person", "scripted", "auto"]  # "auto" only from auto_merge_tier0
     at: datetime
+    test_run: bool = False
 
 
 @dataclass

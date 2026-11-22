@@ -62,12 +62,16 @@ def _ts(value: object) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
+SCRIPTED_STAMP = "human:scripted-test"  # the scripted test approver's stamp (spec 9c): never human-reviewed
+
+
 def is_human_reviewed(front: dict) -> bool:
-    """True when a human: verified entry is at or after generated.at (current, OKF 5.3)."""
+    """True when a human: verified entry (not the scripted test approver's) is at or after
+    generated.at (current, OKF 5.3)."""
     generated = front.get("generated")
     gen_at = _ts(generated.get("at")) if isinstance(generated, dict) else None
     for v in front.get("verified") or []:
-        if not isinstance(v, dict) or not str(v.get("by", "")).startswith("human:"):
+        if not isinstance(v, dict) or not str(v.get("by", "")).startswith("human:") or v.get("by") == SCRIPTED_STAMP:
             continue
         at = _ts(v.get("at"))
         if at is not None and (gen_at is None or at >= gen_at):

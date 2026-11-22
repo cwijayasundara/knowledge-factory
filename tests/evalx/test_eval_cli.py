@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import polars as pl
@@ -9,57 +10,214 @@ from kf.evalx import cli as evalx_cli
 from kf.evalx import removal
 from kf.evalx.runner import SealRefused
 
-
-def _run_dir(p: Path, arm: str, top1: bool, *, starve: bool, heldout=True, test_run=False, seal_ok=True,
-             seed=21, scenarios=("hero",), runs=3, returncode=0, rows=3, arm_rows=None):
-    p.mkdir(parents=True)
-    pl.DataFrame([dict(scenario="hero", arm=arm_rows or arm, run=i, top1=i < top1, trap=False,
-                       control_false_positive=False) for i in range(rows)]).write_parquet(p / "results.parquet")
-    (p / "kf_run.json").write_text(json.dumps(dict(
-        commit="c" * 40, starve=starve, heldout=heldout, test_run=test_run, seal_ok=seal_ok,
-        data_root=f"/x/data_heldout/seed-{seed}", scenarios=list(scenarios), runs=runs, returncode=returncode)))
+LIST = 'items:\n  - id: a\n    file: prompts/autorca.md\n    match: "alias hint"\n    why_derivable_from: catalog\n'
+SEED = "---\ntitle: S\ngenerated:\n  by: seed/1\n  at: '2026-11-01T00:00:00Z'\n---\n# S\n"
+CURATED = ("---\ntitle: C\ngenerated:\n  by: kf-curator/1\n  at: '2026-11-02T00:00:00Z'\n"
+           "verified:\n- by: human:{who}\n  at: '2026-11-03T00:00:00Z'\n---\n# C\n")
+LATER = "2099-01-01T00:00:00+00:00"
 
 
-def _setup(tmp_path, kb_kw=None, **kw):
-    lst, seal = tmp_path / "removal.yaml", tmp_path / "removal.seal"
-    lst.write_text("items: []\n")
-    removal.seal(lst, seal)
-    _run_dir(tmp_path / "s", "graph", 0, starve=True, **kw)
-    _run_dir(tmp_path / "k", "graph_kb", 3, **{**kw, "starve": True, **(kb_kw or {})})
+def git(cwd, *a):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+class World:
+    """A bundle repo (seed commit, committed seal, curated commit), the list outside it, snapshots."""
+
+    def __init__(self, tmp: Path):
+        self.tmp = tmp
+        self.repo = tmp / "repo"
+        (self.repo / "bundle").mkdir(parents=True)
+        (self.repo / "bundle" / "a.md").write_text(SEED)
+        git(self.repo, "init", "-q", "-b", "main")
+        self.commit_all("seed")
+        self.seed = git(self.repo, "rev-parse", "HEAD")
+        self.list = tmp / "removal.yaml"
+        self.list.write_text(LIST)
+        self.seal = self.repo / "integration" / "removal.seal"
+        removal.seal(self.list, self.seal, author="olive")
+        self.commit_all("seal")
+        (self.repo / "bundle" / "c.md").write_text(CURATED.format(who="alice"))
+        self.commit_all("curated")
+        self.kb = git(self.repo, "rev-parse", "HEAD")
+        self.sha = removal.digest(self.list)
+        self.snap = {}
+        for name, files in (("kb", {"a.md": SEED, "c.md": CURATED.format(who="alice")}), ("seed", {"a.md": SEED})):
+            d = tmp / f"snap-{name}"
+            d.mkdir()
+            for f, t in files.items():
+                (d / f).write_text(t)
+            self.snap[name] = d
+
+    def commit_all(self, msg):
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", msg)
+
+    def run_dir(self, p: Path, arm: str, top1: int, *, seed=21, scenarios=("hero",), runs=3, rows=None,
+                arm_rows=None, copy=LIST, **rec):
+        p.mkdir(parents=True)
+        rows = rows or [("hero", 3)]
+        data = [dict(scenario=s, arm=arm_rows or arm, run=i, top1=False, trap=False, control_false_positive=False)
+                for s, n in rows for i in range(n)]
+        for d in data[:top1]:
+            d["top1"] = True
+        pl.DataFrame(data).write_parquet(p / "results.parquet")
+        if copy is not None:
+            (p / "removal.yaml").write_text(copy)
+        kb = arm == "graph_kb"
+        base = dict(commit=self.kb, starve=True, heldout=True, test_run=False, seal_ok=True, seal_hash=self.sha,
+                    removal_sha256=self.sha, data_root=f"/x/data_heldout/seed-{seed}", scenarios=list(scenarios),
+                    runs=runs, returncode=0, started_at=LATER, e2ekg_sha="e" * 40,
+                    snapshot=str(self.snap["kb"]) if kb else None)
+        (p / "kf_run.json").write_text(json.dumps({**base, **rec}))
+
+
+def _setup(tmp_path, kb_kw=None, seed_kw=None, seed_top1=1, **kw):
+    w = World(tmp_path)
+    w.run_dir(tmp_path / "s", "graph", 0, **kw)
+    w.run_dir(tmp_path / "k", "graph_kb", 3, **{**kw, **(kb_kw or {})})
+    w.run_dir(tmp_path / "sk", "graph_kb", seed_top1, **{**kw, "commit": w.seed, "snapshot": str(w.snap["seed"]),
+                                                 **(seed_kw or {})})
     return ["eval", "g2", "--starved", str(tmp_path / "s"), "--kb", str(tmp_path / "k"),
+            "--seed-kb", str(tmp_path / "sk"), "--repo", str(w.repo),
             "--state-dir", str(tmp_path / "state"), "--report", str(tmp_path / "g2.md"),
-            "--list", str(lst), "--seal-file", str(seal)]
+            "--list", str(w.list), "--seal-file", str(w.seal)]
+
+
+def _invalid(argv, capsys, reason, tmp_path):
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert reason in err, err
+    assert not (tmp_path / "g2.md").exists()
+
+
+def _approvals(tmp_path, **rec):
+    (tmp_path / "state").mkdir(exist_ok=True)
+    line = dict(branch="kf/a", by="alice", kind="person", role="approver", test_run=False, tier=1,
+                at="2026-06-01T00:00:00+00:00")
+    (tmp_path / "state" / "approvals.jsonl").write_text(json.dumps({**line, **rec}) + "\n")
 
 
 def test_g2_cli_writes_report_when_valid(tmp_path, capsys):
-    assert cli.main(_setup(tmp_path)) == 0
-    assert "PASS" in (tmp_path / "g2.md").read_text()
+    argv = _setup(tmp_path)
+    _approvals(tmp_path)
+    assert cli.main(argv) == 0, capsys.readouterr().err
+    text = (tmp_path / "g2.md").read_text()
+    assert "PASS" in text and "seed-only control" in text
 
 
-def test_g2_cli_accepts_a_starved_kb_run(tmp_path):
-    assert cli.main(_setup(tmp_path)) == 0
+def test_g2_cli_default_report_is_dated(tmp_path, monkeypatch):
+    argv = _setup(tmp_path)
+    i = argv.index("--report")
+    del argv[i:i + 2]
+    monkeypatch.setattr(removal, "REPO_ROOT", tmp_path / "root")
+    assert cli.main(argv) == 0
+    [report] = (tmp_path / "root" / "reports").iterdir()
+    assert report.name.startswith("g2-20") and report.suffix == ".md"
 
 
-def test_g2_cli_rejects_an_unstarved_kb_run(tmp_path, capsys):
-    assert cli.main(_setup(tmp_path, kb_kw=dict(starve=False))) == 2
-    assert "--kb holds a run that was not starved" in capsys.readouterr().err
-    assert not (tmp_path / "g2.md").exists()
+def test_g2_cli_needs_the_seed_only_control(tmp_path):
+    argv = _setup(tmp_path)
+    i = argv.index("--seed-kb")
+    with pytest.raises(SystemExit):
+        cli.main(argv[:i] + argv[i + 2:])
+
+
+def test_g2_fails_when_kb_does_not_beat_the_seed_only_control(tmp_path, capsys):
+    """+3 over starved, but the seed bundle alone does as well: the curator earned nothing."""
+    assert cli.main(_setup(tmp_path, seed_top1=3)) == 1
+    assert "seed-only control" in capsys.readouterr().out
+    assert "FAIL" in (tmp_path / "g2.md").read_text()
+
+
+@pytest.mark.parametrize("kb_kw,reason", [
+    (dict(starve=False), "--kb holds a run that was not starved"),
+    (dict(scenarios=("hero", "v-x")), "scenarios"),
+    (dict(seed=22), "data roots"),
+    (dict(data_root="/elsewhere/data_heldout/seed-21"), "data roots"),
+    (dict(runs=5), "runs-per-scenario"),
+    (dict(returncode=1), "nonzero"),
+    (dict(rows=[("hero", 2)]), "unequal scored runs"),
+    (dict(rows=[("hero", 2), ("v-x", 1)]), "unequal scored runs per seed and scenario"),
+    (dict(e2ekg_sha="f" * 40), "e2ekg commits"),
+    (dict(e2ekg_sha=None), "e2ekg commits"),
+    (dict(seal_hash="0" * 64), "did not run on the sealed list"),
+    (dict(copy=None), "no non-empty copy of the sealed list"),
+    (dict(started_at="2000-01-01T00:00:00+00:00"), "not before the first run"),
+    (dict(snapshot="/nowhere"), "bundle snapshot missing"),
+    (dict(arm_rows="graph"), "graph_kb"),
+])
+def test_g2_cli_invalid_when_runs_not_comparable(tmp_path, capsys, kb_kw, reason):
+    _invalid(_setup(tmp_path, kb_kw=kb_kw), capsys, reason, tmp_path)
+
+
+@pytest.mark.parametrize("seed_kw,reason", [
+    (dict(starve=False), "--seed-kb holds a run that was not starved"),
+    (dict(commit=None), "no bundle commit"),
+])
+def test_g2_cli_invalid_seed_only_control(tmp_path, capsys, seed_kw, reason):
+    _invalid(_setup(tmp_path, seed_kw=seed_kw), capsys, reason, tmp_path)
+
+
+def test_g2_cli_invalid_when_the_control_ran_on_the_curated_commit(tmp_path, capsys):
+    argv = _setup(tmp_path)
+    rec = tmp_path / "sk" / "kf_run.json"
+    rec.write_text(json.dumps({**json.loads(rec.read_text()), "commit": json.loads(
+        (tmp_path / "k" / "kf_run.json").read_text())["commit"]}))
+    _invalid(argv, capsys, "nothing was curated", tmp_path)
+
+
+def test_g2_cli_invalid_when_the_control_bundle_is_not_pristine(tmp_path, capsys):
+    argv = _setup(tmp_path)
+    repo = tmp_path / "repo"
+    curated = git(repo, "rev-parse", "HEAD")
+    (repo / "bundle" / "d.md").write_text(CURATED.format(who="alice"))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "more")
+    later = git(repo, "rev-parse", "HEAD")
+    for d, commit in (("sk", curated), ("k", later)):
+        rec = tmp_path / d / "kf_run.json"
+        rec.write_text(json.dumps({**json.loads(rec.read_text()), "commit": commit}))
+    _invalid(argv, capsys, "not pristine", tmp_path)
+
+
+def test_g2_cli_invalid_when_kb_runs_used_two_bundle_commits(tmp_path, capsys):
+    w_argv = _setup(tmp_path)
+    rec = tmp_path / "k" / "kf_run.json"
+    second = tmp_path / "k" / "seed-22"
+    second.mkdir()
+    for f in ("results.parquet", "removal.yaml"):
+        (second / f).write_bytes((tmp_path / "k" / f).read_bytes())
+    (second / "kf_run.json").write_text(json.dumps({**json.loads(rec.read_text()), "commit": "d" * 40}))
+    _invalid(w_argv, capsys, "more than one bundle commit", tmp_path)
 
 
 def test_g2_cli_rejects_an_unstarved_starved_run(tmp_path, capsys):
     argv = _setup(tmp_path)
     cfg = tmp_path / "s" / "kf_run.json"
     cfg.write_text(json.dumps({**json.loads(cfg.read_text()), "starve": False}))
-    assert cli.main(argv) == 2
-    assert "--starved holds a run that was not starved" in capsys.readouterr().err
+    _invalid(argv, capsys, "--starved holds a run that was not starved", tmp_path)
 
 
-def test_g2_cli_refuses_report_for_scripted_approval(tmp_path):
+@pytest.mark.parametrize("rec,reason", [
+    (dict(kind="scripted", by="t"), "scripted approval"),
+    (dict(test_run=True), "test-run approval"),
+    (dict(by="Olive "), "removal list author approved"),
+])
+def test_g2_cli_refuses_tainted_approvals(tmp_path, capsys, rec, reason):
     argv = _setup(tmp_path)
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "approvals.jsonl").write_text(json.dumps(
-        dict(branch="kf/a", by="t", kind="scripted", at="2026-06-01T00:00:00+00:00")) + "\n")
-    assert cli.main(argv) == 2 and not (tmp_path / "g2.md").exists()
+    _approvals(tmp_path, **rec)
+    _invalid(argv, capsys, reason, tmp_path)
+
+
+@pytest.mark.parametrize("who,reason", [("scripted-test", "scripted approval stamp"),
+                                        ("olive", "approved by the removal list author")])
+def test_g2_cli_scans_the_measured_bundle_for_stamps(tmp_path, capsys, who, reason):
+    """A fresh --state-dir hides approvals.jsonl; the snapshot's verified stamps still show them."""
+    argv = _setup(tmp_path)
+    (tmp_path / "snap-kb" / "c.md").write_text(CURATED.format(who=who))
+    _invalid(argv, capsys, reason, tmp_path)
 
 
 @pytest.mark.parametrize("kw", [dict(heldout=False), dict(test_run=True), dict(seal_ok=False)])
@@ -67,22 +225,36 @@ def test_g2_cli_refuses_report_for_non_headline_runs(tmp_path, kw):
     assert cli.main(_setup(tmp_path, **kw)) == 2 and not (tmp_path / "g2.md").exists()
 
 
-def test_g2_cli_refuses_when_seal_changed_after_run(tmp_path):
+def test_g2_cli_refuses_when_list_changed_after_seal(tmp_path, capsys):
     argv = _setup(tmp_path)
-    (tmp_path / "removal.yaml").write_text("items: []\n# edit\n")
-    assert cli.main(argv) == 2 and not (tmp_path / "g2.md").exists()
+    (tmp_path / "removal.yaml").write_text(LIST + "# edit\n")
+    _invalid(argv, capsys, "changed since it was sealed", tmp_path)
+
+
+def test_g2_cli_refuses_an_uncommitted_seal(tmp_path, capsys):
+    argv = _setup(tmp_path)
+    seal = tmp_path / "repo" / "integration" / "removal.seal"
+    seal.write_text(seal.read_text() + " ")
+    _invalid(argv, capsys, "not committed and clean", tmp_path)
 
 
 def test_eval_run_maps_flags_onto_run_eval_per_heldout_seed(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(evalx_cli, "run_eval", lambda **kw: calls.append(kw) or kw["run_dir"])
+    monkeypatch.setattr(evalx_cli, "resolve_commit", lambda bundle, ref: "f" * 40 if ref == "abc" else None)
     rc = cli.main(["eval", "run", "--arms", "graph,graph_kb", "--scenarios", "hero", "--runs", "2", "--starve",
                    "--heldout", "--test-run", "--bundle-commit", "abc", "--state-dir", str(tmp_path / "st"),
                    "--data-base", str(tmp_path)])
     assert rc == 0 and [c["data_root"].name for c in calls] == ["seed-21", "seed-22", "seed-23"]
     assert all(c["data_root"].parent.name == "data_heldout" for c in calls)
     assert calls[0]["arms"] == ["graph", "graph_kb"] and calls[0]["runs"] == 2 and calls[0]["starve"] is True
-    assert calls[0]["heldout"] and calls[0]["test_run"] and calls[0]["bundle_commit"] == "abc"
+    assert calls[0]["heldout"] and calls[0]["test_run"]
+    # one commit resolved once for every seed (a merge during the run cannot change the bundle)
+    assert {c["bundle_commit"] for c in calls} == {"f" * 40}
+    prefixes = [c["run_prefix"] for c in calls]
+    assert all(p.startswith("heldout-") for p in prefixes) and [p[-6:] for p in prefixes] == [
+        "seed21", "seed22", "seed23"]
+    assert calls[0]["run_dir"].parent.name.startswith("heldout-")
 
 
 def test_eval_run_defaults_to_curation_seeds(tmp_path, monkeypatch):
@@ -97,7 +269,20 @@ def test_eval_run_reports_seal_refusal(tmp_path, monkeypatch):
     def refuse(**kw):
         raise SealRefused("nope")
     monkeypatch.setattr(evalx_cli, "run_eval", refuse)
-    assert cli.main(["eval", "run", "--heldout", "--state-dir", str(tmp_path)]) == 2
+    lst = tmp_path / "removal.yaml"
+    lst.write_text(LIST)
+    assert cli.main(["eval", "run", "--heldout", "--state-dir", str(tmp_path), "--list", str(lst)]) == 2
+
+
+@pytest.mark.parametrize("content", [None, "items: []\n"])
+def test_headline_eval_run_refuses_a_missing_or_empty_list(tmp_path, monkeypatch, capsys, content):
+    calls = []
+    monkeypatch.setattr(evalx_cli, "run_eval", lambda **kw: calls.append(kw) or kw["run_dir"])
+    lst = tmp_path / "removal.yaml"
+    if content is not None:
+        lst.write_text(content)
+    assert cli.main(["eval", "run", "--heldout", "--state-dir", str(tmp_path), "--list", str(lst)]) == 1
+    assert not calls and "refused" in capsys.readouterr().err
 
 
 def test_eval_metrics_prints_json(tmp_path, capsys):
@@ -109,18 +294,3 @@ def test_eval_metrics_prints_json(tmp_path, capsys):
     assert out["curator"]["flags"] == 0 and out["corpus"]["concepts"] == 0
 
 
-@pytest.mark.parametrize("kb_kw,reason", [
-    (dict(scenarios=("hero", "v-x")), "scenarios"),
-    (dict(seed=22), "seeds"),
-    (dict(runs=5), "runs-per-scenario"),
-    (dict(returncode=1), "nonzero"),
-    (dict(rows=2), "unequal scored runs"),
-])
-def test_g2_cli_invalid_when_runs_not_comparable(tmp_path, capsys, kb_kw, reason):
-    assert cli.main(_setup(tmp_path, kb_kw=kb_kw)) == 2
-    assert reason in capsys.readouterr().err and not (tmp_path / "g2.md").exists()
-
-
-def test_g2_cli_missing_arm_is_invalid_not_a_traceback(tmp_path, capsys):
-    assert cli.main(_setup(tmp_path, kb_kw=dict(arm_rows="graph"))) == 2
-    assert "graph_kb" in capsys.readouterr().err
