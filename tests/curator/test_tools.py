@@ -220,3 +220,12 @@ def test_parallel_decides_on_one_flag_do_not_race(tools, queue):
         list(ex.map(lambda i: tools.decide("domain/refund.md", "NOOP", f"r{i}", [], "medium", [1]), range(6)))
     assert queue.list()[0].status is FlagStatus.held
     assert len(tools.decisions) == 1
+
+
+def test_concept_without_type_is_refused_at_write_time(tools):
+    tools.list_flags()
+    tools.raw_read("wiki/refunds.md")
+    tools.decide("domain/refund.md", "ADD", "r", ["wiki/refunds.md"], "medium", [1])
+    with pytest.raises(CuratorError, match="type"):
+        tools.kb_write("domain/refund.md", REFUND.replace("type: Definition\n", ""))
+    tools.kb_write("domain/refund.md", REFUND)

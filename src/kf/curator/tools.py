@@ -420,6 +420,12 @@ class CuratorTools:
             old = parse_concept(rel, target.read_text(encoding="utf-8")).front if target.is_file() else {}
         except (ValueError, yaml.YAMLError) as e:
             raise CuratorError(f"cannot parse {rel}: {e}") from e
+        is_skill = PurePosixPath(rel).name == "SKILL.md"
+        if not is_skill and not str(new.front.get("type") or "").strip():
+            raise CuratorError(f"{rel}: a concept needs a non-empty frontmatter 'type' (e.g. Definition, Table, "
+                               "Mapping); add it and write again")
+        if is_skill and "type" in new.front:
+            raise CuratorError(f"{rel}: a SKILL.md never has a 'type' key")
         front = self._stamp(rel, old, new.front, d)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(dump_concept(Concept(rel, front, new.body)), encoding="utf-8")
