@@ -509,6 +509,10 @@ class CuratorTools:
 
     def commit(self, message: str) -> None:
         wt = self._need_worktree()
+        ignored = [ln for ln in _git(wt, "status", "--porcelain", "--ignored", "--", BUNDLE).splitlines()
+                   if ln.startswith("!!")]
+        if ignored:  # a gitignore rule must never silently drop a written concept from the proposal
+            raise CuratorError(f"git ignores written bundle files: {ignored}")
         _git(wt, "add", "-A")
         _git(wt, *_IDENT, "commit", "-q", "-m", message)
 

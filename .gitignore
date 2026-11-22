@@ -1,7 +1,8 @@
 .superpowers/
 external/
 state/
-data*/
+/data_curation/
+/data_heldout/
 .venv/
 __pycache__/
 *.pyc

@@ -195,3 +195,11 @@ def test_duplicate_needs_a_live_representative(tools, queue):
     with pytest.raises(CuratorError):  # the representative must not be a duplicate: a cluster keeps one live flag
         tools.update_flag_status(2, "duplicate", "same as 1", duplicate_of=1)
     assert queue.list()[1].status is FlagStatus.triaged
+
+
+def test_commit_refuses_when_gitignore_swallows_a_bundle_file(tools):
+    (tools.worktree / ".gitignore").write_text("data_access/\n")
+    (tools.worktree / "bundle" / "data_access" / "x.md").write_text("x\n")
+    git(tools.worktree, "add", ".gitignore")
+    with pytest.raises(CuratorError, match="ignores"):
+        tools.commit("m")
