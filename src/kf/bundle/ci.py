@@ -8,6 +8,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 from kf.bundle.okf import Concept, load_concept
 from kf.bundle.profile import Profile
 
@@ -56,6 +58,14 @@ def _rel(bundle: Path, p: Path) -> str:
     return p.relative_to(bundle).as_posix()
 
 
+def _load(bundle: Path, f: Path, check: str, issues: list[Issue]) -> Concept | None:
+    try:
+        return load_concept(f)
+    except (ValueError, yaml.YAMLError, OSError) as e:
+        issues.append(Issue(check, _rel(bundle, f), f"cannot load concept: {e}".replace("\n", " ")))
+        return None
+
+
 def run_validator(bundle: Path) -> list[Issue]:
     if not VALIDATOR.is_file():
         return [Issue("okf_validator", str(VALIDATOR), "validator missing; run scripts/fetch_okf.sh")]
@@ -72,11 +82,10 @@ def lint_bundle(bundle: Path, profile: Profile) -> list[Issue]:
     issues: list[Issue] = []
     for f in _concept_files(bundle):
         rel = _rel(bundle, f)
-        try:
-            front = load_concept(f).front
-        except ValueError as e:
-            issues.append(Issue("profile", rel, str(e)))
+        concept = _load(bundle, f, "profile", issues)
+        if concept is None:
             continue
+        front = concept.front
         if f.name == "SKILL.md":
             if "type" in front:
                 issues.append(Issue("profile", rel, "SKILL.md must not have a type: key"))
@@ -100,7 +109,10 @@ def check_links(bundle: Path) -> list[Issue]:
     issues = []
     root = bundle.resolve()
     for f in _visible(bundle):
-        body = CODE_RE.sub("", load_concept(f).body)
+        concept = _load(bundle, f, "links", issues)
+        if concept is None:
+            continue
+        body = CODE_RE.sub("", concept.body)
         for target in LINK_RE.findall(body):
             if SCHEME_RE.match(target) or target.startswith("#"):
                 continue
@@ -127,19 +139,34 @@ def _verified(front: dict) -> list[tuple[str, str]]:
     return [(str(v.get("by")), str(v.get("at"))) for v in front.get("verified") or [] if isinstance(v, dict)]
 
 
+def _generated_by(front: dict) -> str:
+    gen = front.get("generated")
+    return str(gen.get("by", "")) if isinstance(gen, dict) else ""
+
+
 def no_curator_verified(bundle: Path, base: Path) -> list[Issue]:
-    issues = []
+    issues: list[Issue] = []
     for f in _concept_files(bundle):
         rel = _rel(bundle, f)
-        head: Concept = load_concept(f)
+        head = _load(bundle, f, "no_curator_verified", issues)
+        if head is None:
+            continue
         old = base / rel
-        old_keys = set(_verified(load_concept(old).front)) if old.is_file() else set()
+        base_front: dict = {}
+        if old.is_file():
+            loaded = _load(base, old, "no_curator_verified", issues)
+            if loaded is None:
+                continue
+            base_front = loaded.front
+        base_by, head_by = _generated_by(base_front), _generated_by(head.front)
+        base_curator, head_curator = base_by.startswith("kf-curator"), head_by.startswith("kf-curator")
+        if base_curator and not head_curator:
+            issues.append(Issue("no_curator_verified", rel, f"generated.by changed from {base_by!r} to {head_by!r}"))
+        old_keys = set(_verified(base_front))
         added = [k for k in _verified(head.front) if k not in old_keys]
         if not added:
             continue
-        gen = head.front.get("generated")
-        by = str(gen.get("by", "")) if isinstance(gen, dict) else ""
-        if by.startswith("kf-curator"):
+        if base_curator or head_curator:
             issues.append(Issue("no_curator_verified", rel, "verified entry added to a curator-generated concept"))
         elif any(not b.startswith("human:") for b, _ in added):
             issues.append(Issue("no_curator_verified", rel, "non-human verified entry added"))

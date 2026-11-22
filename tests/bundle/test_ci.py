@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from kf.bundle.ci import VALIDATOR, lint_bundle, run_ci, scan_pii
+from kf.bundle.ci import VALIDATOR, check_links, lint_bundle, no_curator_verified, run_ci, scan_pii
 from kf.bundle.profile import Profile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,27 +88,60 @@ def test_run_ci_reports_validator_and_broken_link(tmp_path):
     assert not r.ok and "links" in {i.check for i in r.issues}
 
 
-@needs_validator
+CUR = "generated: {by: kf-curator/0.1, at: 2026-11-22T02:00:00Z}\n"
+HUM = "generated: {by: human:ana, at: 2026-11-22T02:00:00Z}\n"
+VER = "verified:\n- {by: human:ana, at: 2026-11-23T00:00:00Z}\n"
+
+
 def test_ci_rejects_curator_added_verified(tmp_path):
-    gen = "generated: {by: kf-curator/0.1, at: 2026-11-22T02:00:00Z}\n"
-    base = make(tmp_path, "base", {"orders.md": concept(GOOD + gen)})
-    head = make(tmp_path, "head", {"orders.md": concept(
-        GOOD + gen + "verified:\n- {by: human:ana, at: 2026-11-23T00:00:00Z}\n")})
-    r = run_ci(head, base=base)
-    assert "no_curator_verified" in {i.check for i in r.issues}
-    assert run_ci(base, base=base).ok
+    base = make(tmp_path, "base", {"orders.md": concept(GOOD + CUR)})
+    head = make(tmp_path, "head", {"orders.md": concept(GOOD + CUR + VER)})
+    assert [i.check for i in no_curator_verified(head, base)] == ["no_curator_verified"]
+    assert no_curator_verified(base, base) == []
+
+
+def test_ci_rejects_non_human_verified_on_human_concept(tmp_path):
+    base = make(tmp_path, "base", {"orders.md": concept(GOOD + HUM)})
+    bot = make(tmp_path, "head", {"orders.md": concept(GOOD + HUM + "verified:\n- {by: team:bot, at: 2026-11-23T00:00:00Z}\n")})
+    ok = make(tmp_path, "ok", {"orders.md": concept(GOOD + HUM + "verified:\n- {by: human:bo, at: 2026-11-23T00:00:00Z}\n")})
+    assert no_curator_verified(bot, base)
+    assert no_curator_verified(ok, base) == []
+
+
+def test_ci_rejects_generated_by_swap(tmp_path):
+    base = make(tmp_path, "base", {"orders.md": concept(GOOD + CUR)})
+    swap = make(tmp_path, "swap", {"orders.md": concept(GOOD + HUM + VER)})
+    issues = no_curator_verified(swap, base)
+    assert issues and any("generated.by changed" in i.message for i in issues)
+    only = make(tmp_path, "only", {"orders.md": concept(GOOD + HUM)})
+    assert any("generated.by changed" in i.message for i in no_curator_verified(only, base))
+
+
+MALFORMED = {
+    "unterminated.md": "---\ntitle: x\n# no closing fence\n",
+    "badyaml.md": "---\ntitle: [unclosed\n---\nbody\n",
+    "notmap.md": "---\n- a\n- b\n---\nbody\n",
+}
+
+
+def test_malformed_frontmatter_becomes_issues_in_every_check(tmp_path):
+    base = make(tmp_path, "base", {})
+    b = make(tmp_path, "b", MALFORMED)
+    for check, issues in (
+        ("profile", lint_bundle(b, PROFILE)),
+        ("links", check_links(b)),
+        ("no_curator_verified", no_curator_verified(b, base)),
+    ):
+        assert {i.path for i in issues if i.check == check} == set(MALFORMED), check
+    assert not run_ci(b, base=base).ok
 
 
 @needs_validator
-def test_ci_rejects_non_human_verified_on_human_concept(tmp_path):
-    gen = "generated: {by: human:ana, at: 2026-11-22T02:00:00Z}\n"
-    base = make(tmp_path, "base", {"orders.md": concept(GOOD + gen)})
-    head = make(tmp_path, "head", {"orders.md": concept(
-        GOOD + gen + "verified:\n- {by: team:bot, at: 2026-11-23T00:00:00Z}\n")})
-    assert "no_curator_verified" in {i.check for i in run_ci(head, base=base).issues}
-    ok = make(tmp_path, "ok", {"orders.md": concept(
-        GOOD + gen + "verified:\n- {by: human:bo, at: 2026-11-23T00:00:00Z}\n")})
+def test_run_ci_ok_with_human_verification(tmp_path):
+    base = make(tmp_path, "base", {"orders.md": concept(GOOD + HUM)})
+    ok = make(tmp_path, "ok", {"orders.md": concept(GOOD + HUM + VER)})
     assert run_ci(ok, base=base).ok
+    assert not run_ci(make(tmp_path, "sw", {"orders.md": concept(GOOD + HUM + VER)}), base=make(tmp_path, "cb", {"orders.md": concept(GOOD + CUR)})).ok
 
 
 @needs_validator
@@ -119,3 +152,5 @@ def test_cli_ci_exit_codes(tmp_path):
     bad = make(tmp_path, "bad", {"orders.md": concept(GOOD, "mail ana@example.com\n")})
     assert main(["ci", str(good)]) == 0
     assert main(["ci", str(bad)]) == 1
+    broken = make(tmp_path, "broken", {"x.md": MALFORMED["badyaml.md"]})
+    assert main(["ci", str(broken)]) == 1
