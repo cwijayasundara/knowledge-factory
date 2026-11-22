@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -54,13 +55,29 @@ class FlagQueue:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._conn() as c:
+        with self._write() as c:
             c.execute(_SCHEMA)
 
     def _conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.path)
+        # isolation_level=None: no implicit transactions; _write() controls them explicitly.
+        c = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         c.row_factory = sqlite3.Row
         return c
+
+    @contextmanager
+    def _write(self):
+        """One write-locked transaction, so check-then-write is atomic across processes."""
+        conn = self._conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
 
     @staticmethod
     def _flag(row: sqlite3.Row) -> Flag:
@@ -72,34 +89,30 @@ class FlagQueue:
     def add(
         self, flag_in: FlagIn, *, agent_id: str, run_id: str, scenario: str, max_per_run: int = 20
     ) -> Flag:
-        conn = self._conn()
-        try:
-            with conn:
-                dup = conn.execute(
-                    "SELECT * FROM flags WHERE run_id=? AND kind=? AND target IS ? AND summary=?",
-                    (run_id, flag_in.kind.value, flag_in.target, flag_in.summary),
-                ).fetchone()
-                if dup:
-                    return self._flag(dup)
-                n = conn.execute("SELECT COUNT(*) FROM flags WHERE run_id=?", (run_id,)).fetchone()[0]
-                if n >= max_per_run:
-                    raise FlagRateLimited(f"run {run_id} reached {max_per_run} flags")
-                cur = conn.execute(
-                    "INSERT INTO flags (created_at, agent_id, run_id, scenario, kind, summary, target,"
-                    " knowledge_type, observed, expected, suggested_fix, evidence, workaround_used,"
-                    " severity, confidence, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        datetime.now(UTC).isoformat(), agent_id, run_id, scenario,
-                        flag_in.kind.value, flag_in.summary, flag_in.target,
-                        flag_in.knowledge_type.value if flag_in.knowledge_type else None,
-                        flag_in.observed, flag_in.expected, flag_in.suggested_fix,
-                        json.dumps([e.model_dump() for e in flag_in.evidence]),
-                        flag_in.workaround_used, flag_in.severity.value, flag_in.confidence.value, S.open.value,
-                    ),
-                )
-                return self._flag(conn.execute("SELECT * FROM flags WHERE id=?", (cur.lastrowid,)).fetchone())
-        finally:
-            conn.close()
+        with self._write() as conn:
+            dup = conn.execute(
+                "SELECT * FROM flags WHERE run_id=? AND kind=? AND target IS ? AND summary=?",
+                (run_id, flag_in.kind.value, flag_in.target, flag_in.summary),
+            ).fetchone()
+            if dup:
+                return self._flag(dup)
+            n = conn.execute("SELECT COUNT(*) FROM flags WHERE run_id=?", (run_id,)).fetchone()[0]
+            if n >= max_per_run:
+                raise FlagRateLimited(f"run {run_id} reached {max_per_run} flags")
+            cur = conn.execute(
+                "INSERT INTO flags (created_at, agent_id, run_id, scenario, kind, summary, target,"
+                " knowledge_type, observed, expected, suggested_fix, evidence, workaround_used,"
+                " severity, confidence, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    datetime.now(UTC).isoformat(), agent_id, run_id, scenario,
+                    flag_in.kind.value, flag_in.summary, flag_in.target,
+                    flag_in.knowledge_type.value if flag_in.knowledge_type else None,
+                    flag_in.observed, flag_in.expected, flag_in.suggested_fix,
+                    json.dumps([e.model_dump() for e in flag_in.evidence]),
+                    flag_in.workaround_used, flag_in.severity.value, flag_in.confidence.value, S.open.value,
+                ),
+            )
+            return self._flag(conn.execute("SELECT * FROM flags WHERE id=?", (cur.lastrowid,)).fetchone())
 
     def list(self, status: FlagStatus | None = None) -> list[Flag]:
         conn = self._conn()
@@ -118,20 +131,16 @@ class FlagQueue:
         self, id: int, status: FlagStatus, *, cluster_id: int | None = None, resolution: dict | None = None
     ) -> Flag:
         status = FlagStatus(status)
-        conn = self._conn()
-        try:
-            with conn:
-                row = conn.execute("SELECT * FROM flags WHERE id=?", (id,)).fetchone()
-                if row is None:
-                    raise KeyError(id)
-                cur = FlagStatus(row["status"])
-                if status not in TRANSITIONS[cur]:
-                    raise InvalidTransition(f"{cur.value} -> {status.value}")
-                conn.execute(
-                    "UPDATE flags SET status=?, cluster_id=COALESCE(?, cluster_id),"
-                    " resolution=COALESCE(?, resolution) WHERE id=?",
-                    (status.value, cluster_id, json.dumps(resolution) if resolution is not None else None, id),
-                )
-                return self._flag(conn.execute("SELECT * FROM flags WHERE id=?", (id,)).fetchone())
-        finally:
-            conn.close()
+        with self._write() as conn:
+            row = conn.execute("SELECT * FROM flags WHERE id=?", (id,)).fetchone()
+            if row is None:
+                raise KeyError(id)
+            cur = FlagStatus(row["status"])
+            if status not in TRANSITIONS[cur]:
+                raise InvalidTransition(f"{cur.value} -> {status.value}")
+            conn.execute(
+                "UPDATE flags SET status=?, cluster_id=COALESCE(?, cluster_id),"
+                " resolution=COALESCE(?, resolution) WHERE id=?",
+                (status.value, cluster_id, json.dumps(resolution) if resolution is not None else None, id),
+            )
+            return self._flag(conn.execute("SELECT * FROM flags WHERE id=?", (id,)).fetchone())

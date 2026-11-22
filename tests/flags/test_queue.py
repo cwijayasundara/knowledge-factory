@@ -1,3 +1,6 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from kf.flags.models import FlagIn, FlagStatus
@@ -69,6 +72,45 @@ def test_other_enums_validated():
     for kw in ({"knowledge_type": "other"}, {"severity": "critical"}, {"confidence": "none"}):
         with pytest.raises(ValidationError):
             FlagIn(kind="stale", summary="x", **kw)
+
+
+def _race(fn, n):
+    barrier = threading.Barrier(n)
+
+    def run(i):
+        barrier.wait()
+        try:
+            return fn(i)
+        except Exception as e:  # noqa: BLE001
+            return e
+
+    with ThreadPoolExecutor(n) as ex:
+        return list(ex.map(run, range(n)))
+
+
+def test_concurrent_adds_respect_rate_limit(tmp_path):
+    db = tmp_path / "q.db"
+    FlagQueue(db)
+    res = _race(lambda i: _add(FlagQueue(db), f"s{i}"), 40)
+    assert sum(isinstance(r, FlagRateLimited) for r in res) == 20
+    assert not [r for r in res if isinstance(r, Exception) and not isinstance(r, FlagRateLimited)]
+    assert len(FlagQueue(db).list()) == 20
+
+
+def test_concurrent_identical_adds_yield_one_row(tmp_path):
+    db = tmp_path / "q.db"
+    FlagQueue(db)
+    res = _race(lambda i: _add(FlagQueue(db), "same", target="t"), 30)
+    assert {r.id for r in res} == {1}
+    assert len(FlagQueue(db).list()) == 1
+
+
+def test_concurrent_set_status_only_one_wins(tmp_path):
+    db = tmp_path / "q.db"
+    f = _add(FlagQueue(db))
+    res = _race(lambda i: FlagQueue(db).set_status(f.id, FlagStatus.triaged), 20)
+    assert sum(not isinstance(r, Exception) for r in res) == 1
+    assert all(isinstance(r, InvalidTransition) for r in res if isinstance(r, Exception))
 
 
 def test_list_filters_by_status(tmp_path):
