@@ -264,3 +264,39 @@ def test_auto_kind_refused_by_approve_and_merge(repo, q, which, tier):
         go(repo, q, **kw)
     assert _git(repo, "rev-parse", "main") == head
     assert not (repo / "state" / "approvals.jsonl").exists()
+
+
+def test_tier2_second_approver_is_compared_normalized(repo, q):
+    _git(repo, "branch", "-D", "kf/run-1")
+    commit_branch(repo, "kf/run-1", {"bundle/orders.md": orders().replace("confidence: high", "confidence: low")})
+    with pytest.raises(JudgeRequired):
+        go(repo, q, second_approval=person(" Alice "))  # alice again, spelled differently
+    assert go(repo, q, second_approval=person("carol")).merged
+
+
+def test_tier0_approval_refuses_changes_outside_the_bundle(repo, q):
+    commit_branch(repo, "kf/t0", {"index.md": INDEX + "\n- [x](x.md)\n"})  # repo-root index.md, not bundle/
+    head = _git(repo, "rev-parse", "main")
+    with pytest.raises(ReviewRefused, match="outside bundle"):
+        approve_and_merge(repo, "kf/t0", approval=person(), test_run=False, gate=None, queue=q)
+    assert _git(repo, "rev-parse", "main") == head
+
+
+def test_untracked_files_do_not_block_a_merge(repo, q):
+    (repo / "notes.txt").write_text("untracked")
+    assert go(repo, q).merged
+
+
+def test_review_show_prints_decisions_and_cited_sources_never_the_list(repo, capsys, tmp_path, monkeypatch):
+    lst = tmp_path / "removal.yaml"
+    lst.write_text('items:\n  - id: secret-item\n    file: prompts/autorca.md\n    match: "SECRET MATCH"\n'
+                   '    why_derivable_from: catalog\n')
+    monkeypatch.setenv("KF_REMOVAL_LIST", str(lst))
+    write_run(repo, decisions=[{"op": "ADD", "target": "data_access/orders.md", "tier": 1,
+                                "sources": ["catalog/apps.yaml"], "rationale": "flag 1: orders undefined",
+                                "flags": [1], "confidence": "high"}], judge_ok=True)
+    assert main(["review", "show", "--repo", str(repo), "kf/run-1"]) == 0
+    out = capsys.readouterr().out
+    assert "ADD" in out and "flag 1: orders undefined" in out and "catalog/apps.yaml" in out
+    assert "orders.md" in out and "judge_ok" in out
+    assert "SECRET MATCH" not in out and "secret-item" not in out

@@ -184,6 +184,33 @@ def _curate(args) -> int:
     return 0 if run.status == "done" else 1
 
 
+def _review_show(repo: Path, branch: str) -> int:
+    """What a blind reviewer needs: the changed files with the raw sources each concept cites, and the
+    run record's decisions (op, target, tier, sources, flags, rationale). It reads only the branch and
+    the run record, never the removal list."""
+    from kf.review import review as rv
+
+    print(f"{branch}\ttier {int(rv.tier_of(repo, branch))}")
+    for f in rv.changed_files(repo, branch):
+        print(f"{f.change}\t{f.path}")
+        for s in (f.after or {}).get("sources") or []:
+            if isinstance(s, dict):
+                print(f"\tcites\t{s.get('id', '-')}\t{s.get('resource', '-')}")
+    record = rv.read_run_record(repo, branch)
+    if not record:
+        print("no run record")
+        return 0
+    print(f"run {record.get('run_id', '-')}\tstatus {record.get('status', '-')}\tjudge_ok {record.get('judge_ok')}")
+    for d in record.get("decisions") or []:
+        if not isinstance(d, dict):
+            continue
+        print(f"decision\t{d.get('op')}\t{d.get('target')}\ttier {d.get('tier', '-')}\t"
+              f"confidence {d.get('confidence', '-')}\tflags {d.get('flags') or '-'}")
+        print(f"\tsources\t{', '.join(map(str, d.get('sources') or [])) or '-'}")
+        print(f"\trationale\t{d.get('rationale', '')}")
+    return 0
+
+
 def _review(args) -> int:
     from datetime import UTC, datetime
 
@@ -195,10 +222,7 @@ def _review(args) -> int:
             print(f"{b}\ttier {int(rv.tier_of(repo, b))}")
         return 0
     if args.sub == "show":
-        print(f"{args.branch}\ttier {int(rv.tier_of(repo, args.branch))}")
-        for f in rv.changed_files(repo, args.branch):
-            print(f"{f.change}\t{f.path}")
-        return 0
+        return _review_show(repo, args.branch)
     if args.sub == "reject":
         rv.record_rejection(repo, args.branch, args.by, args.reason, datetime.now(UTC))
         return 0

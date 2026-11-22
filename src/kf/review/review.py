@@ -188,6 +188,11 @@ def _resolve(queue: FlagQueue, flag_id: int, branch: str) -> bool:
     return True
 
 
+def _same(who: str) -> str:
+    """An approver id compared for identity: trimmed, case-folded."""
+    return who.strip().casefold()
+
+
 def _check_not_auto(a: Approval | None) -> None:
     if a is not None and a.kind == "auto":
         raise ReviewRefused('approval kind "auto" is only for auto_merge_tier0 log lines')
@@ -229,6 +234,10 @@ def approve_and_merge(
     # 2. Tier and approval rules.
     files = changed_files(repo, branch)
     tier = classify(files, profile=Profile.load(DEFAULT_PROFILE))
+    if tier is Tier.T0:
+        outside = _non_bundle_changes(repo, branch)  # changed_files strips bundle/: a root index.md looks T0
+        if outside:
+            raise ReviewRefused("tier 0 merge refused: changes outside bundle/ or mode changes: " + ", ".join(outside))
     approvals: list[tuple[Approval, str]] = []
     if tier is Tier.T3:
         if branch.startswith("kf/"):
@@ -244,7 +253,7 @@ def approve_and_merge(
             raise GateRequired(f"tier {int(tier)} change needs a passing eval gate: {reasons}")
         approvals.append((approval, "approver"))
         if tier is Tier.T2:
-            second = second_approval is not None and second_approval.by != approval.by
+            second = second_approval is not None and _same(second_approval.by) != _same(approval.by)
             if second:
                 approvals.append((second_approval, "second"))
             elif not read_run_record(repo, branch).get("judge_ok", False):
