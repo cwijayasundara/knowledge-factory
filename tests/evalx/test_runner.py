@@ -67,7 +67,8 @@ def env(tmp_path, monkeypatch):
 
 def test_runner_builds_expected_command(env):
     removal.seal(env.removal, env.seal, author="olive")
-    run_dir = env.go(starve=True, arms=["graph", "graph_kb"], scenarios=["hero", "v-x"], heldout=True)
+    run_dir = env.go(starve=True, arms=["graph", "graph_kb"], scenarios=["hero", "v-x"], heldout=True,
+                     now="2026-06-02T00:00:00+00:00")
     (call,) = env.calls
     cmd, e = call["cmd"], call["env"]
     assert cmd[:4] == ["uv", "run", "e2ekg", "eval"]
@@ -79,8 +80,9 @@ def test_runner_builds_expected_command(env):
     assert e["KF_STATE_DIR"] == str(run_dir / "state")  # held-out flags never reach the curator's queue
     snap = Path(e["KF_BUNDLE_SNAPSHOT"])
     assert snap.name == env.sha and (snap / "index.md").is_file()
-    assert e["KF_NOW"] == "2026-06-01T12:00:00Z"  # author date, not committer date
+    assert e["KF_NOW"] == "2026-06-02T00:00:00+00:00"  # the headline's explicit clock
     rec = json.loads((run_dir / "kf_run.json").read_text())
+    assert rec["now"] == "2026-06-02T00:00:00+00:00"
     assert rec["commit"] == env.sha and rec["starve"] is True and rec["test_run"] is False
     assert rec["heldout"] is True and rec["seal_ok"] is True and len(rec["seal_hash"]) == 64
     assert rec["removal_sha256"] == rec["seal_hash"] and rec["seal_author"] == "olive"
@@ -95,6 +97,19 @@ def test_runner_no_snapshot_or_starve_env_without_kb_arm(env):
     assert not (env.tmp / "state" / "snapshots").exists()
 
 
+def test_non_headline_run_defaults_now_to_the_author_date(env):
+    env.go(arms=["graph"], test_run=True)
+    assert env.calls[0]["env"]["KF_NOW"] == "2026-06-01T12:00:00Z"  # author date, not committer date
+
+
+@pytest.mark.parametrize("now", [None, "", "yesterday"])
+def test_headline_run_refused_without_an_explicit_iso_now(env, now):
+    removal.seal(env.removal, env.seal, author="olive")
+    with pytest.raises(SealRefused, match="--now"):
+        env.go(starve=True, heldout=True, now=now)
+    assert env.calls == []
+
+
 def test_runner_explicit_now_overrides(env):
     env.go(arms=["graph"], test_run=True, now="2026-07-01T00:00:00+00:00")
     assert env.calls[0]["env"]["KF_NOW"] == "2026-07-01T00:00:00+00:00"
@@ -105,8 +120,8 @@ def test_headline_run_refused_without_valid_seal(env, break_seal):
     if break_seal == "mismatch":
         removal.seal(env.removal, env.seal, author="olive")
         env.removal.write_text("items: []\n# edited\n")
-    with pytest.raises(SealRefused):
-        env.go(heldout=True)
+    with pytest.raises(SealRefused, match="does not match"):
+        env.go(heldout=True, now=NOW_ISO)
     assert env.calls == [] and not (env.tmp / "state" / "evals").exists()
 
 
@@ -135,13 +150,13 @@ def test_headline_run_refused_for_an_empty_list(env):
     env.removal.write_text("items: []\n")
     env.seal.write_text(json.dumps({"sha256": removal.digest(env.removal), "author": "olive"}))
     with pytest.raises(SealRefused, match="no items"):
-        env.go(heldout=True)
+        env.go(heldout=True, now=NOW_ISO)
     assert env.calls == []
 
 
 def test_a_list_edit_during_the_run_does_not_reach_it(env):
     removal.seal(env.removal, env.seal, author="olive")
-    run_dir = env.go(starve=True, heldout=True)
+    run_dir = env.go(starve=True, heldout=True, now=NOW_ISO)
     env.removal.write_text(LIST.replace("alias hint", "other"))
     assert (run_dir / "removal.yaml").read_text() == LIST
 

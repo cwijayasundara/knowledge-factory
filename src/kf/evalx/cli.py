@@ -20,6 +20,7 @@ from kf.evalx.g2 import (
 from kf.evalx.metrics import corpus_metrics, curator_metrics
 from kf.evalx.runner import (
     SealRefused,
+    explicit_now,
     resolve_commit,
     row_counts,
     run_eval,
@@ -58,6 +59,12 @@ def _run(args) -> int:
         if overlaps:
             print(f"refused: the bundle holds removal items: {', '.join(overlaps)}", file=sys.stderr)
             return 1
+    if args.heldout and not args.test_run:
+        try:
+            args.now = explicit_now(args.now)
+        except ValueError as e:
+            print(f"refused: headline run: {e}", file=sys.stderr)
+            return 2
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     split = "heldout" if args.heldout else "curation"
     parent = Path(args.state_dir) / "evals" / f"{split}-{stamp}"

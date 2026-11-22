@@ -57,7 +57,9 @@ def main(argv: list[str] | None = None) -> int:
     er.add_argument("--heldout", action="store_true", help="held-out seeds (default: curation seeds)")
     er.add_argument("--test-run", action="store_true", help="mark as a test run (never a headline)")
     er.add_argument("--bundle-commit", help="bundle commit to snapshot (default HEAD)")
-    er.add_argument("--now", help="KF_NOW for the kb tools (default: the bundle commit's author date)")
+    er.add_argument("--now", help="KF_NOW for the kb tools, an ISO timestamp with offset; required for headline "
+                    "(--heldout) runs: pick one value and reuse it for baseline, treatment and control "
+                    "(default for other runs: the bundle commit's author date)")
     er.add_argument("--state-dir", default=str(removal.REPO_ROOT / "state"))
     er.add_argument("--data-base", default=str(removal.REPO_ROOT), help="directory holding data_curation/ and data_heldout/")
     er.add_argument("--bundle", default=str(removal.REPO_ROOT / "bundle"))
@@ -81,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     gt.add_argument("--state-dir", default=str(removal.REPO_ROOT / "state"))
     gt.add_argument("--data-base", default=str(removal.REPO_ROOT), help="directory holding data_curation/")
     gt.add_argument("--list", default=str(removal.default_list()), help="removal list (both sides are starved)")
-    gt.add_argument("--now", help="KF_NOW for both sides (default: the branch tip's author date)")
+    gt.add_argument("--now", help="KF_NOW for both sides, an ISO timestamp with offset (required)")
     em = ev.add_parser("metrics", help="curator and corpus metrics as JSON")
     em.add_argument("--state-dir", default="state")
     em.add_argument("--db", default=None, help="flag queue (default <state-dir>/flags.db)")

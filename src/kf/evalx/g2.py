@@ -96,6 +96,9 @@ def coverage_problems(starved_recs: list[dict], kb_recs: list[dict], seed_recs: 
     every = [r for recs in sets.values() for r in recs]
     if any(r.get("returncode") != 0 for r in every):
         out.append("an e2ekg eval invocation exited nonzero")
+    clocks = {n: sorted({str(r.get("now")) for r in recs}) for n, recs in sets.items()}
+    if None in {r.get("now") for r in every} or len({c for v in clocks.values() for c in v}) != 1:
+        out.append(f"the runs used different clocks (now): {clocks}")
     shas = {r.get("e2ekg_sha") for r in every}
     if None in shas or len(shas) != 1:
         out.append(f"the runs used different or unrecorded e2ekg commits: {sorted(map(str, shas))}")

@@ -15,6 +15,7 @@ SEED = "---\ntitle: S\ngenerated:\n  by: seed/1\n  at: '2026-11-01T00:00:00Z'\n-
 CURATED = ("---\ntitle: C\ngenerated:\n  by: kf-curator/1\n  at: '2026-11-02T00:00:00Z'\n"
            "verified:\n- by: human:{who}\n  at: '2026-11-03T00:00:00Z'\n---\n# C\n")
 LATER = "2099-01-01T00:00:00+00:00"
+CLOCK = "2026-11-20T00:00:00+00:00"
 
 
 def git(cwd, *a):
@@ -73,7 +74,7 @@ class World:
         kb = arm == "graph_kb"
         base = dict(commit=self.kb, starve=True, heldout=True, test_run=False, seal_ok=True, seal_hash=self.sha,
                     removal_sha256=self.sha, data_root=f"/x/data_heldout/seed-{seed}", scenarios=list(scenarios),
-                    runs=runs, returncode=0, started_at=LATER, e2ekg_sha="e" * 40,
+                    runs=runs, returncode=0, started_at=LATER, e2ekg_sha="e" * 40, now=CLOCK,
                     snapshot=str(self.snap["kb"]) if kb else None)
         (p / "kf_run.json").write_text(json.dumps({**base, **rec}))
 
@@ -152,6 +153,8 @@ def test_g2_fails_when_kb_does_not_beat_the_seed_only_control(tmp_path, capsys):
     (dict(copy=None), "no non-empty copy of the sealed list"),
     (dict(started_at="2000-01-01T00:00:00+00:00"), "not before the first run"),
     (dict(snapshot="/nowhere"), "bundle snapshot missing"),
+    (dict(now="2026-11-21T00:00:00+00:00"), "different clocks"),
+    (dict(now=None), "different clocks"),
     (dict(arm_rows="graph"), "graph_kb"),
 ])
 def test_g2_cli_invalid_when_runs_not_comparable(tmp_path, capsys, kb_kw, reason):
@@ -161,6 +164,7 @@ def test_g2_cli_invalid_when_runs_not_comparable(tmp_path, capsys, kb_kw, reason
 @pytest.mark.parametrize("seed_kw,reason", [
     (dict(starve=False), "--seed-kb holds a run that was not starved"),
     (dict(commit=None), "no bundle commit"),
+    (dict(now="2026-11-01T00:00:00+00:00"), "different clocks"),
 ])
 def test_g2_cli_invalid_seed_only_control(tmp_path, capsys, seed_kw, reason):
     _invalid(_setup(tmp_path, seed_kw=seed_kw), capsys, reason, tmp_path)
@@ -273,6 +277,29 @@ def test_eval_run_maps_flags_onto_run_eval_per_heldout_seed(tmp_path, monkeypatc
     assert all(p.startswith("heldout-") for p in prefixes) and [p[-6:] for p in prefixes] == [
         "seed21", "seed22", "seed23"]
     assert calls[0]["run_dir"].parent.name.startswith("heldout-")
+
+
+@pytest.mark.parametrize("now", [None, "soon"])
+def test_headline_eval_run_needs_an_explicit_iso_now(tmp_path, monkeypatch, capsys, now):
+    calls = []
+    monkeypatch.setattr(evalx_cli, "run_eval", lambda **kw: calls.append(kw) or kw["run_dir"])
+    lst = tmp_path / "removal.yaml"
+    lst.write_text(LIST)
+    argv = ["eval", "run", "--heldout", "--state-dir", str(tmp_path), "--list", str(lst),
+            "--bundle", str(tmp_path / "nob")]
+    assert cli.main(argv + (["--now", now] if now else [])) == 2
+    assert not calls and "--now" in capsys.readouterr().err
+
+
+def test_headline_eval_run_passes_one_now_to_every_seed(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(evalx_cli, "run_eval", lambda **kw: calls.append(kw) or kw["run_dir"])
+    monkeypatch.setattr(evalx_cli, "resolve_commit", lambda bundle, ref: "f" * 40)
+    lst = tmp_path / "removal.yaml"
+    lst.write_text(LIST)
+    assert cli.main(["eval", "run", "--heldout", "--state-dir", str(tmp_path), "--list", str(lst),
+                     "--bundle", str(tmp_path / "nob"), "--now", CLOCK]) == 0
+    assert [c["now"] for c in calls] == [CLOCK] * 3
 
 
 def test_eval_run_defaults_to_curation_seeds(tmp_path, monkeypatch):

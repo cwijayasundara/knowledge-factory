@@ -19,7 +19,7 @@ from pathlib import Path
 
 from kf.bundle import serve
 from kf.bundle.okf import dump_concept, parse_concept
-from kf.evalx.runner import E2EKG_DIR, _git, run_eval, scores_from
+from kf.evalx.runner import E2EKG_DIR, _git, explicit_now, run_eval, scores_from
 from kf.evalx.split import CURATION_SEEDS
 from kf.review.gate import GateResult, eval_gate
 from kf.review.review import BUNDLE, MAIN
@@ -79,7 +79,10 @@ def run_gate(repo: Path, branch: str, *, scenarios: list[str], runs: int, state_
         base, head = _git(repo, "rev-parse", MAIN), _git(repo, "rev-parse", f"refs/heads/{branch}")
     except RuntimeError as e:
         raise GateError(str(e)) from e
-    now = now or _git(repo, "log", "-1", "--format=%aI", head)  # one clock for both sides
+    try:
+        now = explicit_now(now)  # one explicit clock for both sides
+    except ValueError as e:
+        raise GateError(str(e)) from e
     state_dir = Path(state_dir).resolve()
     bundle = repo / BUNDLE
     head_snap = as_approved_snapshot(bundle, state_dir / "snapshots", commit=head)

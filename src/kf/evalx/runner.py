@@ -34,6 +34,21 @@ def _git(cwd: Path, *args: str) -> str:
     return p.stdout.strip()
 
 
+def explicit_now(now: str | None) -> str:
+    """The --now value of a headline or gate run: an ISO 8601 timestamp with a UTC offset. One value is
+    picked once and passed to every arm (starved, treatment, control; main and branch for a gate), so
+    stale_after filtering is the same everywhere. ValueError otherwise."""
+    if not now or not str(now).strip():
+        raise ValueError("an explicit --now ISO timestamp is required (pick one value and reuse it for every arm)")
+    try:
+        t = datetime.fromisoformat(str(now).strip())
+    except ValueError as e:
+        raise ValueError(f"--now {now!r} is not an ISO 8601 timestamp") from e
+    if t.tzinfo is None:
+        raise ValueError(f"--now {now!r} has no UTC offset (e.g. 2026-11-20T00:00:00+00:00)")
+    return str(now).strip()
+
+
 def resolve_commit(bundle: Path, ref: str | None) -> str:
     """The full sha of `ref` (default HEAD) in the bundle's repo. Resolve once per invocation, so a
     merge during a multi-seed run cannot change the bundle between seeds."""
@@ -86,6 +101,10 @@ def run_eval(
     seal_info = removal.read_seal(seal_file)
     seal_hash = seal_info["sha256"] if seal_info else None
     if heldout and not test_run:
+        try:
+            now = explicit_now(now)
+        except ValueError as e:
+            raise SealRefused(f"headline run refused: {e}") from e
         if not seal_ok:
             raise SealRefused(f"headline run refused: {seal_file} is missing or does not match {removal_list}")
         try:

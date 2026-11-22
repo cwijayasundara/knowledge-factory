@@ -125,7 +125,8 @@ def test_phase0_scripted_end_to_end(world, tmp_path, monkeypatch):
     git(repo, "worktree", "remove", "--force", str(wt))
     monkeypatch.setattr(gate_run, "run_eval", scripted_eval)
     assert main(["eval", "gate", "--branch", "kf/e2e-1", "--repo", str(repo), "--scenarios", "hero",
-                 "--state-dir", str(tmp_path / "evals-state"), "--data-base", str(tmp_path)]) == 0
+                 "--state-dir", str(tmp_path / "evals-state"), "--data-base", str(tmp_path),
+                 "--now", "2026-11-20T00:00:00+00:00"]) == 0
     rec = json.loads((repo / "state" / "runs" / "e2e-1.json").read_text())
     assert rec["gate"]["split"] == "curation" and rec["scores"]["base"] == rec["scores"]["head"]
 

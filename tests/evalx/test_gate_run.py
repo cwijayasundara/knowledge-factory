@@ -17,6 +17,9 @@ CONCEPT = ("---\ntitle: TMS\ndescription: d\nx-kf-review: proposed\ngenerated:\n
            "  at: '2026-11-02T00:00:00Z'\n---\n# TMS\n")
 
 
+NOW = "2026-11-20T00:00:00+00:00"
+
+
 def git(repo, *a):
     return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo, check=True,
                           capture_output=True, text=True).stdout.strip()
@@ -60,7 +63,7 @@ class FakeEval:
 
 def gate(repo, tmp_path, fake):
     return gate_run.run_gate(repo, "kf/c1", scenarios=["hero"], runs=3, state_dir=tmp_path / "st",
-                             data_base=tmp_path, run=fake)
+                             data_base=tmp_path, run=fake, now=NOW)
 
 
 def test_gate_runs_curation_seeds_only_and_records_scores_with_provenance(repo, tmp_path):
@@ -72,7 +75,7 @@ def test_gate_runs_curation_seeds_only_and_records_scores_with_provenance(repo, 
     assert not {int(r.name.removeprefix("seed-")) for r in roots} & set(HELDOUT_SEEDS)
     assert all(c["starve"] and c["arms"] == ["graph_kb"] and c["own_flag_sink"] and not c["heldout"]
                for c in fake.calls)
-    assert len({c["now"] for c in fake.calls}) == 1  # one clock for both sides
+    assert {c["now"] for c in fake.calls} == {NOW}  # one explicit clock for both sides
     rec = json.loads((repo / "state" / "runs" / "c1.json").read_text())
     assert rec["scores"]["base"]["top1"] == 6 and rec["scores"]["head"]["top1"] == 9
     g = rec["gate"]
@@ -104,7 +107,7 @@ def test_gate_fails_when_head_regresses(repo, tmp_path):
 def test_gate_needs_a_curator_branch_with_a_run_record(repo, tmp_path):
     with pytest.raises(gate_run.GateError):
         gate_run.run_gate(repo, "main", scenarios=["hero"], runs=3, state_dir=tmp_path, data_base=tmp_path,
-                          run=FakeEval({"base": 1, "head": 1}))
+                          run=FakeEval({"base": 1, "head": 1}), now=NOW)
     (repo / "state" / "runs" / "c1.json").unlink()
     with pytest.raises(gate_run.GateError, match="no run record"):
         gate(repo, tmp_path, FakeEval({"base": 1, "head": 1}))
@@ -130,9 +133,26 @@ def test_kf_eval_gate_cli(repo, tmp_path, monkeypatch, capsys):
     fake = FakeEval({"base": 2, "head": 3})
     monkeypatch.setattr(gate_run, "run_eval", fake)
     rc = cli.main(["eval", "gate", "--branch", "kf/c1", "--repo", str(repo), "--scenarios", "hero",
-                   "--state-dir", str(tmp_path / "st"), "--data-base", str(tmp_path)])
+                   "--state-dir", str(tmp_path / "st"), "--data-base", str(tmp_path), "--now", NOW])
     assert rc == 0 and "gate PASS" in capsys.readouterr().out
     fake.top1 = {"base": 3, "head": 0}
     rc = cli.main(["eval", "gate", "--branch", "kf/c1", "--repo", str(repo), "--scenarios", "hero",
-                   "--state-dir", str(tmp_path / "st2"), "--data-base", str(tmp_path)])
+                   "--state-dir", str(tmp_path / "st2"), "--data-base", str(tmp_path), "--now", NOW])
     assert rc == 1 and "gate FAIL" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("now", [None, "not-a-time"])
+def test_gate_needs_one_explicit_iso_now(repo, tmp_path, now):
+    fake = FakeEval({"base": 1, "head": 1})
+    with pytest.raises(gate_run.GateError, match="--now"):
+        gate_run.run_gate(repo, "kf/c1", scenarios=["hero"], runs=3, state_dir=tmp_path / "st",
+                          data_base=tmp_path, run=fake, now=now)
+    assert fake.calls == []
+
+
+def test_kf_eval_gate_cli_refuses_without_now(repo, tmp_path, monkeypatch, capsys):
+    fake = FakeEval({"base": 2, "head": 3})
+    monkeypatch.setattr(gate_run, "run_eval", fake)
+    rc = cli.main(["eval", "gate", "--branch", "kf/c1", "--repo", str(repo), "--scenarios", "hero",
+                   "--state-dir", str(tmp_path / "st"), "--data-base", str(tmp_path)])
+    assert rc == 2 and "--now" in capsys.readouterr().err and fake.calls == []
