@@ -5,6 +5,7 @@ description = "Knowledge factory"
 requires-python = ">=3.12"
 dependencies = [
     "langchain-core>=1",
+    "polars>=2.1.0",
     "pydantic>=2",
     "pyyaml>=6",
 ]

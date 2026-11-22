@@ -4,6 +4,7 @@ the read-only `kb_search` / `kb_read` over a frozen bundle snapshot.
 The handler, not the model, attaches agent, run id and scenario; the queue rate-limits per run.
 A flag the queue refuses comes back as a short notice, never an exception, so the agent goes on."""
 
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,7 +20,12 @@ CONTINUE = "Continue your task with the best workaround you have."
 
 
 def utcnow() -> datetime:
-    return datetime.now(UTC)
+    """The clock for the kb tools: `KF_NOW` (ISO timestamp) when set, so an eval run is reproducible."""
+    fixed = os.environ.get("KF_NOW")
+    if not fixed:
+        return datetime.now(UTC)
+    at = datetime.fromisoformat(fixed.strip().replace("Z", "+00:00"))
+    return at if at.tzinfo else at.replace(tzinfo=UTC)
 
 
 def make_kf_tools(*, queue_path: Path, bundle_snapshot: Path, run_id: str, agent_id: str, scenario: str,
