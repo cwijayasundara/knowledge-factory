@@ -35,6 +35,36 @@ def test_draft_proposed_deprecated_not_current(tmp_path):
     assert [c.path for c in current_concepts(tmp_path, now=NOW)] == ["d.md"]
 
 
+def test_review_gate_in_review_rejected_and_absent(tmp_path):
+    put(tmp_path, "ir.md", "x-kf-review: in_review\n", "# Body\nzebra\n")
+    put(tmp_path, "rj.md", "x-kf-review: rejected\n", "# Body\nzebra\n")
+    put(tmp_path, "none.md", "", "# Body\nzebra\n")
+    put(tmp_path, "ok.md", "x-kf-review: approved\n", "# Body\nzebra\n")
+    assert sorted(c.path for c in current_concepts(tmp_path, now=NOW)) == ["none.md", "ok.md"]
+    assert sorted(h.path for h in kb_search(tmp_path, "zebra", now=NOW)) == ["none.md", "ok.md"]
+    assert "not current" in kb_read(tmp_path, "ir.md", now=NOW)
+    assert "not current" in kb_read(tmp_path, "rj.md", now=NOW)
+
+
+@pytest.mark.parametrize("target", ["../x", "/../x", "a/../../x.md"])
+def test_superseded_by_traversal_returns_message(tmp_path, target):
+    put(tmp_path, "a.md", f"status: deprecated\nsuperseded_by: {target}\n")
+    assert "invalid superseded_by" in kb_read(tmp_path, "a.md", now=NOW)
+
+
+def test_superseded_by_absolute_path_returns_message(tmp_path):
+    put(tmp_path, "a.md", "status: deprecated\nsuperseded_by: C:/etc/passwd\n")
+    assert "invalid superseded_by" in kb_read(tmp_path, "a.md", now=NOW)
+
+
+def test_superseded_target_malformed_does_not_raise(tmp_path):
+    put(tmp_path, "a.md", "status: deprecated\nsuperseded_by: b.md\n")
+    (tmp_path / "b.md").write_text("---\ntitle: [unclosed\n")
+    assert "unreadable concept b.md" in kb_read(tmp_path, "a.md", now=NOW)
+    (tmp_path / "c.md").write_text("---\nnever closed\n")
+    assert "unreadable" in kb_read(tmp_path, "c.md", now=NOW)
+
+
 def test_superseded_followed_and_cycle_terminates(tmp_path):
     put(tmp_path, "a.md", "status: deprecated\nsuperseded_by: /b.md\n")
     put(tmp_path, "b.md", "", "# Real answer\n")
@@ -100,3 +130,44 @@ def test_snapshot_is_frozen(tmp_path):
     assert "original" in (snap / "domain/x.md").read_text()
     assert not (snap / "domain/new.md").exists()
     assert "original" in kb_read(snap, "domain/x.md", now=NOW)
+
+
+def _repo(tmp_path):
+    b = tmp_path / "work" / "bundle"
+    put(b, "domain/x.md", "", "original\n")
+    git(b, "init", "-q")
+    git(b, "add", ".")
+    git(b, "commit", "-qm", "c1")
+    sha = subprocess.run(["git", "-C", str(b), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    return b, sha
+
+
+def test_snapshot_bad_ref_and_traversal(tmp_path):
+    b, _ = _repo(tmp_path)
+    dest = tmp_path / "snaps"
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("k")
+    for bad in ["nope", "..", "../victim", "", "-x"]:
+        with pytest.raises(ValueError):
+            snapshot(b, dest, commit=bad)
+    assert (victim / "keep.txt").exists() and (tmp_path / "work").exists()
+    assert not dest.exists()  # nothing created for an invalid ref
+
+
+def test_snapshot_ref_name_yields_sha_dir(tmp_path):
+    b, sha = _repo(tmp_path)
+    snap = snapshot(b, tmp_path / "snaps", commit="HEAD")
+    assert snap.name == sha
+    assert (snap / "domain/x.md").exists()
+    assert snapshot(b, tmp_path / "snaps", commit=sha) == snap  # re-snapshot replaces cleanly
+
+
+def test_snapshot_failure_leaves_no_partial_dir(tmp_path):
+    b, sha = _repo(tmp_path)
+    dest = tmp_path / "snaps"
+    snap = snapshot(b, dest, commit=sha)
+    with pytest.raises(ValueError):
+        snapshot(b, dest, commit="deadbeef" * 5)
+    assert [p.name for p in dest.iterdir()] == [sha]  # no partial or temp dirs; good snapshot untouched
+    assert (snap / "domain/x.md").exists()

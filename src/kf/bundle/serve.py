@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import io
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -52,7 +53,7 @@ def _is_current(c: Concept, now: datetime) -> bool:
     return (
         f.get("status", "stable") == "stable"
         and not _stale(f, now)
-        and f.get("x-kf-review") != "proposed"
+        and f.get("x-kf-review") in (None, "approved")
     )
 
 
@@ -121,14 +122,20 @@ def kb_read(bundle: Path, path: str, *, now: datetime) -> str:
         f = bundle / rel
         if not f.is_file():
             return f"not found: {rel}"
-        c = load_concept(f)
+        try:
+            c = load_concept(f)
+        except (ValueError, OSError, UnicodeDecodeError) as e:
+            return f"unreadable concept {rel}: {e}"
         status = c.front.get("status", "stable")
         if status == "deprecated":
             target = c.front.get("superseded_by")
             seen.append(rel)
             if not target:
                 return f"deprecated: {rel} has no replacement"
-            nxt = _safe(str(target).lstrip("/"))
+            try:
+                nxt = _safe(str(target).lstrip("/"))
+            except ValueError:
+                return f"invalid superseded_by in {rel}: {target!r}"
             if nxt in seen:
                 return f"superseded-by cycle: {' -> '.join(seen + [nxt])}"
             if len(seen) > MAX_HOPS:
@@ -138,7 +145,7 @@ def kb_read(bundle: Path, path: str, *, now: datetime) -> str:
             if len(seen) == 1:
                 first = msg
             continue
-        if status != "stable" or _stale(c.front, now) or c.front.get("x-kf-review") == "proposed":
+        if status != "stable" or _stale(c.front, now) or c.front.get("x-kf-review") not in (None, "approved"):
             return f"not current: {rel}"
         text = f.read_text(encoding="utf-8")
         return f"{first}\n\n{text}" if seen else text
@@ -146,17 +153,34 @@ def kb_read(bundle: Path, path: str, *, now: datetime) -> str:
 
 
 def snapshot(bundle: Path, dest: Path, *, commit: str) -> Path:
-    """Copy the bundle tree as of 'commit' into dest/<commit>/ (frozen; later edits do not show)."""
-    out = Path(dest) / commit
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
-    proc = subprocess.run(
-        ["git", "archive", "--format=tar", commit, "--", "."],
+    """Copy the bundle tree as of 'commit' into dest/<full sha>/ (frozen; later edits do not show)."""
+    bundle = Path(bundle)
+    if not commit or commit.startswith("-"):
+        raise ValueError(f"invalid commit: {commit!r}")
+    rev = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}"],
         cwd=bundle,
         capture_output=True,
-        check=True,
+        text=True,
     )
-    with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tar:
-        tar.extractall(out, filter="data")
+    sha = rev.stdout.strip()
+    if rev.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40,64}", sha):
+        raise ValueError(f"not a commit in the bundle repo: {commit!r}")
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    out = dest / sha
+    tmp = Path(tempfile.mkdtemp(prefix=".snap-", dir=dest))
+    try:
+        proc = subprocess.run(
+            ["git", "archive", "--format=tar", sha, "--", "."], cwd=bundle, capture_output=True
+        )
+        if proc.returncode != 0:
+            raise ValueError(f"git archive failed for {commit!r}: {proc.stderr.decode(errors='replace').strip()}")
+        with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tar:
+            tar.extractall(tmp, filter="data")
+        if out.exists():
+            shutil.rmtree(out)
+        tmp.rename(out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return out
