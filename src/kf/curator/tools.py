@@ -149,7 +149,7 @@ class CuratorTools:
         self.decisions: list[Decision] = []
         self.sources_read: set[str] = set()
         self.profile = Profile.load(DEFAULT_PROFILE)
-        self._save_lock = threading.Lock()  # the agent runs tool calls in parallel threads
+        self._save_lock = threading.RLock()  # the agent runs tool calls in parallel threads
         self.record: dict = {"run_id": self.run_id, "status": "running", "branch": None, "worktree": None,
                              "started_at": _now(), "decisions": [], "flags_in": [], "flags_out": {},
                              "judge_ok": None}
@@ -231,17 +231,18 @@ class CuratorTools:
             raise CuratorError(str(e)) from e
         if st not in _CURATOR_SETS:
             raise CuratorError(f"the curator may set only {sorted(s.value for s in _CURATOR_SETS)}")
-        res = {"reason": reason, "run_id": self.run_id}
-        if st is FlagStatus.duplicate:
-            rep = duplicate_of
-            if rep is None or rep == flag_id or rep not in self.flags_in:
-                raise CuratorError("a duplicate needs duplicate_of: another flag picked in this run that stays live")
-            if get_flag(self.queue, rep).status in (FlagStatus.duplicate, FlagStatus.declined):
-                raise CuratorError(f"flag {rep} is itself {get_flag(self.queue, rep).status.value}: "
-                                   "pick the cluster's live representative")
-            res["duplicate_of"] = rep
-        self._set_flag(flag_id, st, res)
-        return f"flag {flag_id}: {st.value}"
+        with self._save_lock:
+            res = {"reason": reason, "run_id": self.run_id}
+            if st is FlagStatus.duplicate:
+                rep = duplicate_of
+                if rep is None or rep == flag_id or rep not in self.flags_in:
+                    raise CuratorError("a duplicate needs duplicate_of: another flag picked in this run that stays live")
+                if get_flag(self.queue, rep).status in (FlagStatus.duplicate, FlagStatus.declined):
+                    raise CuratorError(f"flag {rep} is itself {get_flag(self.queue, rep).status.value}: "
+                                       "pick the cluster's live representative")
+                res["duplicate_of"] = rep
+            self._set_flag(flag_id, st, res)
+            return f"flag {flag_id}: {st.value}"
 
     # ---- stage 3-4: locate and re-derive ------------------------------------
 
@@ -318,42 +319,45 @@ class CuratorTools:
         """Stage 5 reconcile: record ADD, UPDATE, DEPRECATE, NOOP or ESCALATE for a bundle-relative target.
         ADD/UPDATE/DEPRECATE must cite raw source ids read with raw_read in this run; without one the
         decision is recorded as ESCALATE. flags lists the flag ids the decision answers."""
-        note = ""
-        cited = [s for s in dict.fromkeys(sources or []) if s in self.sources_read]
-        flag_ids = [f for f in dict.fromkeys(flags or []) if f in self.flags_in]
-        if op in WRITE_OPS:
+        with self._save_lock:  # tool calls run in parallel threads; decisions and flag moves are serial
+            note = ""
+            cited = [s for s in dict.fromkeys(sources or []) if s in self.sources_read]
+            flag_ids = [f for f in dict.fromkeys(flags or []) if f in self.flags_in]
+            if op in WRITE_OPS:
+                try:
+                    target, abs_path = self._bundle_path(target, write=True)
+                except WriteDenied as e:
+                    op, note = "ESCALATE", f"protected or invalid target ({e}); "
+                else:
+                    exists = abs_path.is_file()
+                    if op == "ADD" and exists:
+                        raise CuratorError(f"{target} exists: use UPDATE or DEPRECATE")
+                    if op != "ADD" and not exists:
+                        raise CuratorError(f"{target} does not exist: use ADD")
+                    if not cited:
+                        op, note = "ESCALATE", "no cited raw source read in this run; "
             try:
-                target, abs_path = self._bundle_path(target, write=True)
-            except WriteDenied as e:
-                op, note = "ESCALATE", f"protected or invalid target ({e}); "
-            else:
-                exists = abs_path.is_file()
-                if op == "ADD" and exists:
-                    raise CuratorError(f"{target} exists: use UPDATE or DEPRECATE")
-                if op != "ADD" and not exists:
-                    raise CuratorError(f"{target} does not exist: use ADD")
-                if not cited:
-                    op, note = "ESCALATE", "no cited raw source read in this run; "
-        try:
-            d = Decision(run_id=self.run_id, target=target, op=op, rationale=note + rationale, sources=cited,
-                         confidence=confidence, tier=self._tier(target, op, cited, confidence), flags=flag_ids)
-        except ValidationError as e:
-            raise CuratorError(str(e)) from e
-        prior = next((i for i, p in enumerate(self.decisions) if p.target == d.target), None)
-        if prior is None:
-            self.decisions.append(d)
-        else:  # a re-decision on one target replaces the earlier one; its flags stay answered
-            merged = list(dict.fromkeys([*self.decisions[prior].flags, *d.flags]))
-            d = d.model_copy(update={"flags": merged})
-            self.decisions[prior] = d
-        for fid in d.flags:
-            if d.op in WRITE_OPS:
-                self._set_flag(fid, FlagStatus.in_review)
-            elif get_flag(self.queue, fid).status is not FlagStatus.in_review:
-                self._set_flag(fid, FlagStatus.held,
-                               {"reason": d.op.lower(), "run_id": self.run_id, "rationale": d.rationale})
-        self.save()
-        return d.model_dump_json()
+                d = Decision(run_id=self.run_id, target=target, op=op, rationale=note + rationale, sources=cited,
+                             confidence=confidence, tier=self._tier(target, op, cited, confidence), flags=flag_ids)
+            except ValidationError as e:
+                raise CuratorError(str(e)) from e
+            prior = next((i for i, p in enumerate(self.decisions) if p.target == d.target), None)
+            if prior is None:
+                self.decisions.append(d)
+            else:  # a re-decision on one target replaces the earlier one; its flags stay answered
+                merged = list(dict.fromkeys([*self.decisions[prior].flags, *d.flags]))
+                d = d.model_copy(update={"flags": merged})
+                self.decisions[prior] = d
+            for fid in d.flags:
+                cur = get_flag(self.queue, fid).status
+                if d.op in WRITE_OPS:
+                    if cur is not FlagStatus.in_review:
+                        self._set_flag(fid, FlagStatus.in_review)
+                elif cur not in (FlagStatus.in_review, FlagStatus.held):
+                    self._set_flag(fid, FlagStatus.held,
+                                   {"reason": d.op.lower(), "run_id": self.run_id, "rationale": d.rationale})
+            self.save()
+            return d.model_dump_json()
 
     def file_ontology_need(self, flag_ids: list[int], kind: str, example: str) -> str:
         """Stage 5 reconcile: file a need the ontology cannot express (kind error_template, metric_tag or

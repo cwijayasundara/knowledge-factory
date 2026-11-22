@@ -203,3 +203,20 @@ def test_commit_refuses_when_gitignore_swallows_a_bundle_file(tools):
     git(tools.worktree, "add", ".gitignore")
     with pytest.raises(CuratorError, match="ignores"):
         tools.commit("m")
+
+
+def test_redeciding_to_noop_does_not_repeat_a_held_transition(tools, queue):
+    tools.list_flags()
+    tools.decide("domain/refund.md", "NOOP", "nothing to do", [], "medium", [1])
+    tools.decide("domain/refund.md", "NOOP", "still nothing", [], "medium", [1])
+    assert queue.list()[0].status is FlagStatus.held
+
+
+def test_parallel_decides_on_one_flag_do_not_race(tools, queue):
+    from concurrent.futures import ThreadPoolExecutor
+
+    tools.list_flags()
+    with ThreadPoolExecutor(6) as ex:
+        list(ex.map(lambda i: tools.decide("domain/refund.md", "NOOP", f"r{i}", [], "medium", [1]), range(6)))
+    assert queue.list()[0].status is FlagStatus.held
+    assert len(tools.decisions) == 1
