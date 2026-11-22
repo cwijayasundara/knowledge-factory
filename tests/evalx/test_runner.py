@@ -246,3 +246,49 @@ def test_an_invalid_list_error_does_not_quote_the_list(tmp_path):
     with pytest.raises(removal.RemovalRefused) as e:
         removal.load_nonempty(p)
     assert SENTINEL not in str(e.value)
+
+
+def test_a_non_headline_starved_run_validates_the_list_without_quoting_it(env):
+    env.removal.write_text("items:\n  - id: a\n    file: nope\n    match: " + SENTINEL + "\n    why_derivable_from: c\n")
+    with pytest.raises(SealRefused) as e:
+        env.go(starve=True, arms=["graph_kb"], own_flag_sink=True)  # a gate-like curation run, no seal needed
+    assert SENTINEL not in str(e.value) and "file" in str(e.value) and env.calls == []
+
+
+ITEM_ID = "zq-id-7f3a"
+STARVE_PROBE = """
+import json, sys
+from e2ekg.agent.specialists import prompt
+try:
+    prompt("autorca")
+except Exception as e:
+    why = f"{type(e).__name__}: {e}"  # what e2ekg/evals/run.py writes to <run_dir>/errors.jsonl
+    with open(sys.argv[1], "a") as f:
+        f.write(json.dumps({"run": "hero__graph__0", "error": why}) + "\\n")
+"""
+
+
+def test_the_real_starve_failure_path_leaves_no_list_text_in_the_repo(tmp_path, tmp_path_factory):
+    import os
+
+    from kf.evalx.runner import E2EKG_DIR
+
+    spec = E2EKG_DIR / "src" / "e2ekg" / "agent" / "specialists.py"
+    if not (E2EKG_DIR / ".venv").is_dir() or not spec.is_file() or "list entry #" not in spec.read_text():
+        pytest.skip("no patched external/e2ekg (bash integration/apply.sh); test_starve.py in patch 0003 covers it")
+    outside = tmp_path_factory.mktemp("outside")
+    run_dir = tmp_path / "repo" / "state" / "evals" / "heldout-x" / "seed-21"
+    run_dir.mkdir(parents=True)
+    errors = run_dir / "errors.jsonl"
+    lst = outside / "removal.yaml"
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"} | {"E2EKG_STARVE": str(lst)}
+    for file, match in (("prompts/autorca.md", SENTINEL), ("prompts/zqnofile.md", "x")):
+        lst.write_text(f"items:\n  - id: {ITEM_ID}\n    file: {file}\n    match: {match}\n"
+                       "    why_derivable_from: catalog\n")
+        REAL_RUN(["uv", "run", "--quiet", "python", "-c", STARVE_PROBE, str(errors)], cwd=E2EKG_DIR, env=env,
+                 check=True)
+    assert len(errors.read_text().splitlines()) == 2 and "stale removal list" in errors.read_text()
+    needles = [ITEM_ID, SENTINEL, "zqnofile", "autorca.md", str(lst), outside.name]
+    leaks = [(p, n) for p in (tmp_path / "repo").rglob("*") if p.is_file() for n in needles
+             if n.encode() in p.read_bytes()]
+    assert leaks == []

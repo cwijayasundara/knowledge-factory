@@ -1,4 +1,4 @@
-From 991ea17ffef5a2660b85357a7f5e13d9b66561f0 Mon Sep 17 00:00:00 2001
+From 11dd1081f8f9381544e3b3e015f7e86cab9a8f45 Mon Sep 17 00:00:00 2001
 From: kf integration <kf@localhost>
 Date: Sun, 22 Nov 2026 07:56:47 +0000
 Subject: [PATCH 3/3] feat(agent): knowledge-starved switch (E2EKG_STARVE)
@@ -12,13 +12,13 @@ Aliases reach the agent only as catalog data through the Resolver, never
 as hint text, so prompt text is all the switch removes. Unset, prompts
 are byte-identical to the files.
 ---
- src/e2ekg/agent/specialists.py | 25 ++++++++++++-
- tests/agent/test_starve.py     | 64 ++++++++++++++++++++++++++++++++++
- 2 files changed, 88 insertions(+), 1 deletion(-)
+ src/e2ekg/agent/specialists.py | 33 ++++++++++++++-
+ tests/agent/test_starve.py     | 77 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 109 insertions(+), 1 deletion(-)
  create mode 100644 tests/agent/test_starve.py
 
 diff --git a/src/e2ekg/agent/specialists.py b/src/e2ekg/agent/specialists.py
-index a654e9c..3206379 100644
+index a654e9c..c88e6b0 100644
 --- a/src/e2ekg/agent/specialists.py
 +++ b/src/e2ekg/agent/specialists.py
 @@ -1,6 +1,7 @@
@@ -37,7 +37,7 @@ index a654e9c..3206379 100644
  
  SPECIALISTS: dict[str, list[str]] = {
      "topology": ["dependency_closure", "trace_edges"],
-@@ -35,7 +37,28 @@ DESCRIPTIONS = {
+@@ -35,7 +37,36 @@ DESCRIPTIONS = {
  
  
  def prompt(name: str) -> str:
@@ -55,12 +55,20 @@ index a654e9c..3206379 100644
 +    as a hint text, so prompt text is all the switch removes."""
 +    from kf.evalx.removal import RemovalList
 +
-+    for item in RemovalList.load(removal).items:
++    # Errors carry no item id, match text, prompt-file name or list path: eval runs write str(e) to
++    # errors.jsonl in the run dir, which a blind reviewer may browse.
++    if not removal.is_file():
++        raise FileNotFoundError("starve: the removal list (E2EKG_STARVE) is missing")
++    try:
++        items = RemovalList.load(removal).items
++    except Exception:
++        raise ValueError("starve: the removal list does not load or validate") from None
++    for n, item in enumerate(items, 1):
 +        source = PROMPTS / item.file.removeprefix("prompts/")
 +        if not source.is_file():
-+            raise ValueError(f"{removal}: item {item.id}: no prompt file {item.file}")
++            raise ValueError(f"starve: list entry #{n} names no prompt file (stale removal list)")
 +        if item.match not in source.read_text():
-+            raise ValueError(f"{removal}: item {item.id}: match not found in {item.file}")
++            raise ValueError(f"starve: list entry #{n} did not match a prompt (stale removal list)")
 +        if item.file == f"prompts/{name}.md":
 +            text = text.replace(item.match, "")
 +    return text
@@ -69,10 +77,10 @@ index a654e9c..3206379 100644
  def build_specialists(store: Store, proc_root: Path, scenario: str, *, llm=None,
 diff --git a/tests/agent/test_starve.py b/tests/agent/test_starve.py
 new file mode 100644
-index 0000000..efbd023
+index 0000000..19e4c13
 --- /dev/null
 +++ b/tests/agent/test_starve.py
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,77 @@
 +"""The knowledge-starved switch: with E2EKG_STARVE naming a removal list, every listed match
 +text is deleted from its prompt file wherever prompt() reads it (the commander, the specialists,
 +the fast path and the raw-only arm alike); unset, prompts are byte-identical to the files. A
@@ -121,15 +129,15 @@ index 0000000..efbd023
 +
 +def test_a_stale_match_fails_loudly(monkeypatch, tmp_path):
 +    monkeypatch.setenv(STARVE_ENV, removal(tmp_path, ("prompts/autorca.md", "no such text")))
-+    with pytest.raises(ValueError, match="not found"):
++    with pytest.raises(ValueError, match="did not match"):
 +        prompt("autorca")
-+    with pytest.raises(ValueError, match="not found"):
++    with pytest.raises(ValueError, match="did not match"):
 +        prompt("logs")  # a stale item anywhere in the list stops every prompt
 +
 +
 +def test_an_unknown_prompt_file_fails_loudly(monkeypatch, tmp_path):
 +    monkeypatch.setenv(STARVE_ENV, removal(tmp_path, ("prompts/nope.md", "x")))
-+    with pytest.raises(ValueError, match="nope"):
++    with pytest.raises(ValueError, match="names no prompt file"):
 +        prompt("autorca")
 +
 +
@@ -137,6 +145,19 @@ index 0000000..efbd023
 +    monkeypatch.setenv(STARVE_ENV, str(tmp_path / "absent.yaml"))
 +    with pytest.raises(FileNotFoundError):
 +        prompt("autorca")
++
++
++@pytest.mark.parametrize("item", [("prompts/autorca.md", "zq-sentinel-text"), ("prompts/zqnofile.md", "x"),
++                                  ("not-a-prompt", "zq-sentinel-text")])
++def test_errors_never_name_the_item_text_file_or_list(monkeypatch, tmp_path, item):
++    """eval runs write str(e) into the run dir's errors.jsonl: nothing of the list may be in it."""
++    path = removal(tmp_path, item)
++    monkeypatch.setenv(STARVE_ENV, path)
++    with pytest.raises(ValueError) as e:
++        prompt("autorca")
++    msg = str(e.value)
++    for leak in ("i0", item[0], item[1], "zqnofile", path, "removal.yaml"):
++        assert leak not in msg, (leak, msg)
 -- 
 2.50.1 (Apple Git-155)
 

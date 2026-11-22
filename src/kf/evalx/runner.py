@@ -132,6 +132,11 @@ def run_eval(
             raise SealRefused(f"headline run refused: {e}") from e
     if starve and not removal_list.is_file():
         raise SealRefused(f"a starved run needs the removal list: {removal_list} not found")
+    if starve:
+        try:  # every starved run (gate, flag collection, headline): errors name fields, never list text
+            removal.load_nonempty(removal_list)
+        except removal.RemovalRefused as e:
+            raise SealRefused(f"starved run refused: {e}") from None
 
     run_dir = Path(run_dir).resolve() if run_dir else state_dir / "evals" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     if starve:
