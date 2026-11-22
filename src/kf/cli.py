@@ -25,11 +25,13 @@ def main(argv: list[str] | None = None) -> int:
     rv = sub.add_parser("review", help="review and merge curator branches").add_subparsers(
         dest="sub", required=True
     )
-    for name in ("list", "show", "approve", "reject"):
+    for name in ("list", "show", "approve", "reject", "auto-merge"):
         sp = rv.add_parser(name)
         sp.add_argument("--repo", default=".")
         if name == "show" or name == "reject":
             sp.add_argument("branch")
+        if name == "auto-merge":
+            sp.add_argument("--branch", required=True)
         if name == "approve":
             sp.add_argument("--branch", required=True)
             sp.add_argument("--by", required=True)
@@ -79,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="raw sources (as-of view) the curator may read; must not contain hard links to "
                          "answer-key files (path checks cannot detect hard links)")
     cu.add_argument("--run-id", default=None, help="default: curate-<UTC timestamp>")
+    cu.add_argument("--trails-dir", default=None, help="e2ekg eval run dir whose saved trails the curator may list")
     cu.add_argument("--repo", default=".")
     cu.add_argument("--db", default=DEFAULT_DB)
     on = sub.add_parser("ontology-needs", help="list ontology needs the curator filed, with the e2ekg command")
@@ -135,6 +138,7 @@ def _curate(args) -> int:
     run = agent.run_curation(
         repo=Path(args.repo), queue=FlagQueue(args.db), raw_dir=Path(args.raw_dir),
         model=args.model or agent.DEFAULT_MODEL, run_id=run_id, judge_model=args.judge_model, dry_run=args.dry_run,
+        trails_dir=Path(args.trails_dir) if args.trails_dir else None,
     )
     for d in run.decisions:
         print(f"{d.op}\t{d.target}\ttier {d.tier}\t{','.join(d.sources) or '-'}\t{d.rationale}")
@@ -167,6 +171,14 @@ def _review(args) -> int:
         return 0
     if args.sub == "reject":
         rv.record_rejection(repo, args.branch, args.by, args.reason, datetime.now(UTC))
+        return 0
+    if args.sub == "auto-merge":
+        try:
+            res = rv.auto_merge_tier0(repo, args.branch)
+        except rv.ReviewRefused as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 2
+        print(f"auto-merged {args.branch} tier 0 {res.merge_sha}")
         return 0
     now = datetime.now(UTC)
     record = rv.read_run_record(repo, args.branch)

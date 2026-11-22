@@ -59,7 +59,7 @@ class CuratorTier3Refused(ReviewRefused):
 @dataclass(frozen=True)
 class Approval:
     by: str
-    kind: Literal["person", "scripted"]
+    kind: Literal["person", "scripted", "auto"]  # "auto" only from auto_merge_tier0
     at: datetime
 
 
@@ -288,3 +288,49 @@ def approve_and_merge(
         if _resolve(queue, fid, branch):
             resolved.append(fid)
     return MergeResult(True, tier, sha, resolved)
+
+
+def _auto_refusal(f: ChangedFile, profile: Profile) -> str | None:
+    if classify([f], profile=profile) is not Tier.T0:
+        return f"{f.path} is not tier 0"
+    if f.path in ("index.md", "log.md"):
+        return None
+    if f.change != "modified" or f.before is None or f.after is None:
+        return f"{f.path} is not an in-place edit of an existing concept"
+    if f.before.get("body") != f.after.get("body"):
+        return f"{f.path} body changed"
+    return None
+
+
+def auto_merge_tier0(repo: Path, branch: str) -> MergeResult:
+    """Merge a branch with no human approval only when it is purely mechanical: CI passes against
+    main, every changed file classifies Tier 0 and no concept body changed. Never stamps verified,
+    never resolves flags. Logs an approvals.jsonl line with kind "auto" (not an approval for g2 or
+    metrics). Anything else is refused: use approve_and_merge."""
+    repo = Path(repo)
+    if _git(repo, "rev-parse", "--abbrev-ref", "HEAD") != MAIN:
+        raise ReviewRefused(f"repo must have {MAIN} checked out")
+    if _git(repo, "status", "--porcelain", "--untracked-files=no"):
+        raise ReviewRefused("working tree has uncommitted changes")
+    with tempfile.TemporaryDirectory() as tmp:
+        head_bundle = _export(repo, branch, Path(tmp) / "head")
+        base_bundle = _export(repo, MAIN, Path(tmp) / "base")
+        report = run_ci(head_bundle, base=base_bundle)
+    if not report.ok:
+        raise CiFailed("; ".join(f"{i.check} {i.path}: {i.message}" for i in report.issues))
+    files = changed_files(repo, branch)
+    if not files:
+        raise ReviewRefused("nothing to merge")
+    profile = Profile.load(DEFAULT_PROFILE)
+    why = [r for f in files if (r := _auto_refusal(f, profile))]
+    if why:
+        raise ReviewRefused("not auto-mergeable: " + "; ".join(why))
+    _log_event(repo, {"branch": branch, "by": "auto", "kind": "auto", "role": "auto", "test_run": False,
+                      "tier": 0, "at": datetime.now(UTC).isoformat()})
+    try:
+        _git(repo, *_IDENT, "merge", "--no-ff", "-q", "-m", f"merge {branch} (tier 0, auto)", branch)
+    except RuntimeError as e:
+        subprocess.run(["git", "merge", "--abort"], cwd=repo, capture_output=True)
+        _log_event(repo, {"branch": branch, "event": "merge_failed", "error": str(e)})
+        raise
+    return MergeResult(True, Tier.T0, _git(repo, "rev-parse", "HEAD"), [])

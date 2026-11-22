@@ -66,7 +66,7 @@ PERMISSIONS = [
 CURATOR_PROMPT = """You are the knowledge factory's curator. You maintain an OKF v0.3 bundle of concepts \
 (domain, data_access) and SKILL.md skills on a git branch that a person reviews before it merges.
 
-Work in stage order: 1 collect (list_flags; the ingest subagent can summarise flags and raw sources), \
+Work in stage order: 1 collect (list_flags, and list_trails when offered; the ingest subagent can summarise flags and raw sources), \
 2 triage (cluster duplicates, update_flag_status held/duplicate/declined with a reason), 3 locate \
 (kb_read index.md first, then kb_grep/kb_read), 4 re-derive every claim from raw sources (raw_read), \
 5 reconcile (decide ADD/UPDATE/DEPRECATE/NOOP/ESCALATE per target, citing the raw source ids you read), \
@@ -255,7 +255,7 @@ def _finish(tools: CuratorTools, model, judge_model, dry_run: bool) -> CurationR
 
 def run_curation(*, repo: Path, queue: FlagQueue, raw_dir: Path, model: str | BaseChatModel, run_id: str,
                  judge_model: str | BaseChatModel | None = None, dry_run: bool = False,
-                 state_dir: Path | None = None) -> CurationRun:
+                 state_dir: Path | None = None, trails_dir: Path | None = None) -> CurationRun:
     """One curator run on branch kf/<run_id>. A dry run works on a copy of the queue and a temporary
     state dir and discards the branch. An exception leaves the run record 'running' for the next run
     to clean up."""
@@ -272,7 +272,7 @@ def run_curation(*, repo: Path, queue: FlagQueue, raw_dir: Path, model: str | Ba
         else:
             adopted = recover_crashed_runs(repo, queue, state)
         tools = CuratorTools(repo, f"kf/{run_id}", queue, raw_dir, WriteGuard.default(), state_dir=state,
-                             adopted=adopted)
+                             adopted=adopted, trails_dir=trails_dir)
         tools.save(model=model_id(model), judge_model=model_id(judge_model) if judge_model is not None else None,
                    dry_run=dry_run)
         if dry_run:

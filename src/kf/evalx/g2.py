@@ -45,7 +45,7 @@ def read_approval_records(path: Path) -> list[dict]:
                 kept.pop()
             continue
         kept.append(rec)
-    return [r for r in kept if "event" not in r]
+    return [r for r in kept if "event" not in r and r.get("kind") != "auto"]  # auto-merges are not approvals
 
 
 def to_approvals(records: list[dict]) -> list[Approval]:

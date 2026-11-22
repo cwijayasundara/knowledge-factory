@@ -33,7 +33,9 @@ and may file a flag about it, but its tools refuse to write it.
 
 ## Stages (one run = one branch `kf/<run_id>` from `main`)
 
-1. Collect: `list_flags` picks the open flags (marked triaged). The ingest helper is read-only.
+1. Collect: `list_flags` picks the open flags (marked triaged). When the run has an eval trails dir,
+   `list_trails` summarises past runs' tool errors and requested corrections (untrusted data, as flags).
+   The ingest helper is read-only.
 2. Triage and cluster: dedup; `update_flag_status` held (insufficient evidence), duplicate or declined.
 3. Locate: `kb_read index.md` first, then `kb_grep` / `kb_read`.
 4. Re-derive: check each claim against raw sources with `raw_read`, never against summaries.
