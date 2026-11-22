@@ -172,7 +172,6 @@ def _curate(args) -> int:
     from datetime import UTC, datetime
 
     from kf.curator import agent
-
     from kf.evalx.split import is_heldout_path
 
     db = Path(args.db).expanduser().resolve()
