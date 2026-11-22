@@ -25,7 +25,7 @@ def _setup(tmp_path, kb_kw=None, **kw):
     lst.write_text("items: []\n")
     removal.seal(lst, seal)
     _run_dir(tmp_path / "s", "graph", 0, starve=True, **kw)
-    _run_dir(tmp_path / "k", "graph_kb", 3, starve=True, **{**kw, **(kb_kw or {})})
+    _run_dir(tmp_path / "k", "graph_kb", 3, **{**kw, "starve": True, **(kb_kw or {})})
     return ["eval", "g2", "--starved", str(tmp_path / "s"), "--kb", str(tmp_path / "k"),
             "--state-dir", str(tmp_path / "state"), "--report", str(tmp_path / "g2.md"),
             "--list", str(lst), "--seal-file", str(seal)]
