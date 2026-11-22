@@ -173,6 +173,15 @@ def _curate(args) -> int:
 
     from kf.curator import agent
 
+    from kf.evalx.split import is_heldout_path
+
+    db = Path(args.db).expanduser().resolve()
+    # A held-out run's own flag sink is <state>/evals/heldout-<stamp>/seed-N/state/flags.db (its
+    # kf_run.json is written only after e2ekg exits, so the run dir name is checked too).
+    if is_heldout_path(db) or any(part.startswith("heldout-") for part in db.parts):
+        print(f"refused: {args.db} is a held-out flag queue (held-out data never reaches the curator)",
+              file=sys.stderr)
+        return 2
     run_id = args.run_id or datetime.now(UTC).strftime("curate-%Y%m%dT%H%M%SZ")
     run = agent.run_curation(
         repo=Path(args.repo), queue=FlagQueue(args.db), raw_dir=Path(args.raw_dir),
