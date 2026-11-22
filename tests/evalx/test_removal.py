@@ -1,13 +1,20 @@
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from kf.cli import main
-import json
-
 from kf.evalx import removal
-from kf.evalx.removal import RemovalItem, RemovalList, RemovalRefused, read_seal, seal, seed_overlaps, verify_seal
+from kf.evalx.removal import (
+    RemovalItem,
+    RemovalList,
+    RemovalRefused,
+    read_seal,
+    seal,
+    seed_overlaps,
+    verify_seal,
+)
 
 SAMPLE = """items:
   - id: alias-hints

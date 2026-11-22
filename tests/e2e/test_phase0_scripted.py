@@ -5,15 +5,15 @@ kf eval gate (scripted eval) records the gate -> kf review approve --kind script
 flags resolved -> a second curate is a NOOP.
 """
 
-import os
-
 import json
+import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
 import pytest
+from curator.fake_model import ScriptedChatModel, call, say
 from langchain_core.messages import AIMessage
 
 from kf.agent_tools import make_kf_tools
@@ -26,8 +26,6 @@ from kf.curator.rawview import mark
 from kf.evalx import gate_run
 from kf.flags.models import FlagStatus
 from kf.flags.queue import FlagQueue
-
-from curator.fake_model import ScriptedChatModel, call, say
 
 ROOT = Path(__file__).resolve().parents[2]
 CONCEPT = "domain/severity/sev2.md"

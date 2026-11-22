@@ -8,10 +8,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from kf.evalx import removal
-from kf.evalx.g2 import (coverage_problems, g2_verdict, pristine_problems, read_approval_records, seal_problems,
-                         snapshot_problems, to_approvals)
+from kf.evalx.g2 import (
+    coverage_problems,
+    g2_verdict,
+    pristine_problems,
+    read_approval_records,
+    seal_problems,
+    snapshot_problems,
+    to_approvals,
+)
 from kf.evalx.metrics import corpus_metrics, curator_metrics
-from kf.evalx.runner import SealRefused, resolve_commit, row_counts, run_eval, scores_from
+from kf.evalx.runner import (
+    SealRefused,
+    resolve_commit,
+    row_counts,
+    run_eval,
+    scores_from,
+)
 from kf.evalx.split import CURATION_SEEDS, HELDOUT_SEEDS
 from kf.flags.queue import FlagQueue
 

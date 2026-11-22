@@ -1,17 +1,14 @@
 import json
-import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from kf.bundle.okf import load_concept
+from kf.bundle.serve import current_concepts
 from kf.cli import main
 from kf.flags.models import FlagIn, FlagStatus
 from kf.flags.queue import FlagQueue
-from datetime import timedelta
-
-from kf.bundle.okf import load_concept
-from kf.bundle.serve import current_concepts
 from kf.review.gate import GateResult
 from kf.review.review import (
     Approval,

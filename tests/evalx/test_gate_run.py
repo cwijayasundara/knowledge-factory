@@ -9,7 +9,6 @@ import polars as pl
 import pytest
 
 from kf import cli
-from kf.evalx import cli as evalx_cli
 from kf.evalx import gate_run
 from kf.evalx.split import CURATION_SEEDS, HELDOUT_SEEDS
 from kf.review.gate import GateResult
@@ -59,9 +58,9 @@ class FakeEval:
         return d
 
 
-def gate(repo, tmp_path, fake, *extra):
+def gate(repo, tmp_path, fake):
     return gate_run.run_gate(repo, "kf/c1", scenarios=["hero"], runs=3, state_dir=tmp_path / "st",
-                             data_base=tmp_path, run=fake, *extra)
+                             data_base=tmp_path, run=fake)
 
 
 def test_gate_runs_curation_seeds_only_and_records_scores_with_provenance(repo, tmp_path):
