@@ -22,6 +22,7 @@ from kf.bundle.okf import load_concept, parse_concept
 from kf.bundle.serve import current_concepts
 from kf.cli import main
 from kf.curator.agent import run_curation
+from kf.curator.rawview import mark
 from kf.evalx import gate_run
 from kf.flags.models import FlagStatus
 from kf.flags.queue import FlagQueue
@@ -65,6 +66,7 @@ def world(tmp_path):
     raw = tmp_path / "raw"
     (raw / "wiki").mkdir(parents=True)
     (raw / "wiki" / "severity.md").write_text("SEV2 means major impact on a key experience, and the on-call rotation is paged.\n")
+    mark(raw, {"scenarios": ["wiki"]})  # kf raw-view's marker: the curator reads only as-of views
     return repo, raw, FlagQueue(tmp_path / "state" / "flags.db")
 
 

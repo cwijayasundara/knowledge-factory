@@ -13,3 +13,31 @@ def assert_disjoint(curation: tuple[int, ...] = CURATION_SEEDS,
 
 
 assert_disjoint()
+
+HELDOUT_ROOT = "data_heldout"
+
+
+def is_heldout_path(path) -> bool:
+    """True when `path` is under a data_heldout root, or is (or is inside) an eval run dir whose
+    kf_run.json says held-out: held-out data must never reach the curator (spec 9b)."""
+    import json
+    from pathlib import Path
+
+    p = Path(path).expanduser().resolve()
+    if any(part.startswith(HELDOUT_ROOT) for part in p.parts):
+        return True
+    for d in (p, *p.parents):
+        rec = d / "kf_run.json"
+        if rec.is_file():
+            try:
+                return bool(json.loads(rec.read_text()).get("heldout"))
+            except ValueError:
+                return True  # unreadable: fail closed
+    if p.is_dir():
+        for rec in p.rglob("kf_run.json"):
+            try:
+                if json.loads(rec.read_text()).get("heldout"):
+                    return True
+            except ValueError:
+                return True
+    return False

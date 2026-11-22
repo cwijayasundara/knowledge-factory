@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from kf.curator.rawview import mark
 from kf.flags.models import FlagIn
 from kf.flags.queue import FlagQueue
 
@@ -37,6 +38,7 @@ def raw_dir(tmp_path):
     d = tmp_path / "raw"
     (d / "wiki").mkdir(parents=True)
     (d / "wiki" / "refunds.md").write_text("A refund is money returned to a customer for an order.\n")
+    mark(d, {"scenarios": ["wiki"]})  # an as-of raw view, as kf raw-view leaves it
     return d
 
 

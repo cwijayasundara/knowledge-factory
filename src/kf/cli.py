@@ -93,12 +93,17 @@ def main(argv: list[str] | None = None) -> int:
     cu.add_argument("--model", default=None, help="curator chat model (default: e2ekg's Fireworks GLM)")
     cu.add_argument("--judge-model", default=None, help="LLM-judge model; must differ from --model")
     cu.add_argument("--raw-dir", required=True,
-                    help="raw sources (as-of view) the curator may read; must not contain hard links to "
-                         "answer-key files (path checks cannot detect hard links)")
+                    help="the as-of raw view built by kf raw-view (never held-out data); must not contain hard "
+                         "links to answer-key files (path checks cannot detect hard links)")
     cu.add_argument("--run-id", default=None, help="default: curate-<UTC timestamp>")
-    cu.add_argument("--trails-dir", default=None, help="e2ekg eval run dir whose saved trails the curator may list")
+    cu.add_argument("--trails-dir", default=None,
+                    help="a curation-seed e2ekg eval run dir whose saved trails the curator may list (held-out refused)")
     cu.add_argument("--repo", default=".")
     cu.add_argument("--db", default=DEFAULT_DB)
+    rw = sub.add_parser("raw-view", help="build the curator's as-of raw view of a curation data root")
+    rw.add_argument("--data-root", required=True, help="a curation data root, e.g. data_curation/seed-11")
+    rw.add_argument("--out", required=True, help="the view directory to pass to kf curate --raw-dir")
+    rw.add_argument("--scenarios", default="all", help="comma list of scenario names, or all")
     on = sub.add_parser("ontology-needs", help="list ontology needs the curator filed, with the e2ekg command")
     on.add_argument("--state-dir", default="state")
     args = p.parse_args(argv)
@@ -108,6 +113,19 @@ def main(argv: list[str] | None = None) -> int:
         from kf.evalx import cli as evalx_cli
 
         return evalx_cli.run(args)
+    if args.cmd == "raw-view":
+        from kf.curator import rawview
+        from kf.evalx.runner import E2EKG_DIR
+
+        try:
+            out = rawview.build_view(Path(args.data_root), Path(args.out),
+                                     scenarios=None if args.scenarios == "all" else args.scenarios.split(","),
+                                     builder=rawview.e2ekg_builder(E2EKG_DIR))
+        except rawview.RawViewError as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 2
+        print(out)
+        return 0
     if args.cmd == "ontology-needs":
         from kf.curator.ontology_handoff import render_needs
 

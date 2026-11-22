@@ -103,11 +103,20 @@ def _branch_exists(repo: Path, branch: str) -> bool:
 
 
 def check_raw_dir(raw_dir: Path) -> None:
-    """Refuse a raw root that is, holds, or links into the answer key (any letter case): anti-goal A1."""
+    """Refuse a raw root that is, holds, or links into the answer key (any letter case): anti-goal A1;
+    one that is not an as-of view built by `kf raw-view` (spec 5.4); and held-out data (spec 9b)."""
+    from kf.curator.rawview import is_raw_view
+    from kf.evalx.split import is_heldout_path
+
     if mentions_answers(raw_dir):
         raise CuratorError(f"{raw_dir}: denied as a raw source")
     if not raw_dir.is_dir():
         raise CuratorError(f"{raw_dir}: raw sources directory not found")
+    if is_heldout_path(raw_dir):
+        raise CuratorError(f"{raw_dir}: held-out data never reaches the curator (spec 9b)")
+    if not is_raw_view(raw_dir):
+        raise CuratorError(f"{raw_dir}: not an as-of raw view; build one with kf raw-view "
+                           "(the generator's raw tree holds post-cutoff data)")
     for dirpath, dirnames, filenames in os.walk(raw_dir):
         for name in [*dirnames, *filenames]:
             p = Path(dirpath) / name
@@ -121,6 +130,11 @@ class CuratorTools:
                  state_dir: Path | None = None, adopted: list[int] | None = None,
                  trails_dir: Path | None = None):
         self.trails_dir = Path(trails_dir) if trails_dir is not None else None
+        if self.trails_dir is not None:
+            from kf.evalx.split import is_heldout_path
+
+            if is_heldout_path(self.trails_dir):
+                raise CuratorError(f"{self.trails_dir}: held-out trails never reach the curator (spec 9b)")
         self.repo = Path(repo).resolve()
         self.branch = branch
         self.run_id = branch.removeprefix("kf/")
