@@ -95,3 +95,65 @@ def test_cli_auto_merge(repo, capsys):
     assert main(["review", "auto-merge", "--repo", str(repo), "--branch", "kf/r7"]) == 0
     branch(repo, "kf/r8", {"bundle/orders.md": orders(body="# Orders\n\nNew.\n")})
     assert main(["review", "auto-merge", "--repo", str(repo), "--branch", "kf/r8"]) == 2
+
+
+@pytest.mark.parametrize("rel", ["index.md", "log.md", "AGENTS.md", "kf-profile.yaml", "raw/x.json", "notes/other.md"])
+def test_non_bundle_paths_refused(repo, rel):
+    branch(repo, "kf/n", {rel: INDEX if rel.endswith(".md") else "x: 1\n"})
+    head = _git(repo, "rev-parse", "main")
+    with pytest.raises(ReviewRefused, match="outside bundle"):
+        auto_merge_tier0(repo, "kf/n")
+    assert _git(repo, "rev-parse", "main") == head
+
+
+def test_non_bundle_identical_body_md_refused_and_mode_change(repo):
+    (repo / "notes").mkdir()
+    (repo / "notes" / "a.md").write_text(orders())
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "notes")
+    branch(repo, "kf/same", {"notes/a.md": orders(extra="x-kf-usage: 9\n")})
+    with pytest.raises(ReviewRefused, match="outside bundle"):
+        auto_merge_tier0(repo, "kf/same")
+    _git(repo, "checkout", "-q", "-b", "kf/mode", "main")
+    (repo / "bundle" / "index.md").write_text(INDEX + "\nx\n")
+    (repo / "bundle" / "orders.md").chmod(0o755)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "mode")
+    _git(repo, "checkout", "-q", "main")
+    with pytest.raises(ReviewRefused, match="mode"):
+        auto_merge_tier0(repo, "kf/mode")
+
+
+V = "verified:\n- by: human:alice\n  at: '2026-11-02T00:00:00Z'\n"
+
+
+def reviewed(extra=""):
+    return orders(extra="x-kf-usage: 1\n" + extra).replace("x-kf-review: proposed", "x-kf-review: approved")
+
+
+@pytest.fixture
+def reviewed_repo(repo):
+    (repo / "bundle" / "orders.md").write_text(reviewed(V))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "reviewed")
+    return repo
+
+
+def test_usage_only_refresh_of_reviewed_concept_merges(reviewed_repo):
+    branch(reviewed_repo, "kf/u", {"bundle/orders.md": reviewed(V).replace("x-kf-usage: 1", "x-kf-usage: 5")})
+    assert auto_merge_tier0(reviewed_repo, "kf/u").merged
+
+
+@pytest.mark.parametrize("name", ["generated", "verified", "status", "review"])
+def test_trust_state_changes_refused(reviewed_repo, name):
+    text = reviewed(V).replace("x-kf-usage: 1", "x-kf-usage: 2")
+    text = {
+        "generated": text.replace("2026-11-21T00:00:00Z", "2026-11-22T00:00:00Z"),
+        "verified": text.replace("  at: '2026-11-02T00:00:00Z'\n", "  at: '2026-11-02T00:00:00Z'\n- by: human:bob\n  at: '2026-11-03T00:00:00Z'\n"),
+        "status": text.replace("x-kf-risk: 1", "x-kf-risk: 1\nstatus: deprecated"),
+        "review": text.replace("x-kf-review: approved", "x-kf-review: in_review"),
+    }[name]
+    branch(reviewed_repo, "kf/t", {"bundle/orders.md": text})
+    with pytest.raises(ReviewRefused):
+        auto_merge_tier0(reviewed_repo, "kf/t")
+    assert not (reviewed_repo / "state" / "approvals.jsonl").exists()

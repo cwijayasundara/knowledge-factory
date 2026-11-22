@@ -19,6 +19,7 @@ from kf.review.review import (
     CuratorTier3Refused,
     GateRequired,
     JudgeRequired,
+    ReviewRefused,
     ScriptedNotAllowed,
     _git,
     approve_and_merge,
@@ -245,3 +246,17 @@ def test_approval_logged_before_merge_and_failure_recorded(repo, q, monkeypatch)
     assert lines[0]["by"] == "alice" and lines[-1]["event"] == "merge_failed"
     assert real(repo, "rev-parse", "main") == head
     assert q.list()[0].status == FlagStatus.in_review
+
+
+@pytest.mark.parametrize("which", ["approval", "second_approval"])
+@pytest.mark.parametrize("tier", [1, 2, 3])
+def test_auto_kind_refused_by_approve_and_merge(repo, q, which, tier):
+    auto = Approval("auto", "auto", NOW)
+    kw = {"test_run": tier == 3, which: auto}
+    if which == "second_approval":
+        kw["approval"] = person()
+    head = _git(repo, "rev-parse", "main")
+    with pytest.raises(ReviewRefused, match="auto"):
+        go(repo, q, **kw)
+    assert _git(repo, "rev-parse", "main") == head
+    assert not (repo / "state" / "approvals.jsonl").exists()

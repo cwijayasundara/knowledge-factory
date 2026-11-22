@@ -187,6 +187,11 @@ def _resolve(queue: FlagQueue, flag_id: int, branch: str) -> bool:
     return True
 
 
+def _check_not_auto(a: Approval | None) -> None:
+    if a is not None and a.kind == "auto":
+        raise ReviewRefused('approval kind "auto" is only for auto_merge_tier0 log lines')
+
+
 def _check_scripted(a: Approval | None, test_run: bool) -> None:
     if a is not None and a.kind == "scripted" and not test_run:
         raise ScriptedNotAllowed("scripted approvals are allowed only on --test-run runs")
@@ -203,6 +208,8 @@ def approve_and_merge(
     second_approval: Approval | None = None,
 ) -> MergeResult:
     repo = Path(repo)
+    _check_not_auto(approval)
+    _check_not_auto(second_approval)
     _check_scripted(approval, test_run)
     _check_scripted(second_approval, test_run)
     if _git(repo, "rev-parse", "--abbrev-ref", "HEAD") != MAIN:
@@ -299,7 +306,26 @@ def _auto_refusal(f: ChangedFile, profile: Profile) -> str | None:
         return f"{f.path} is not an in-place edit of an existing concept"
     if f.before.get("body") != f.after.get("body"):
         return f"{f.path} body changed"
+    differing = {k for k in f.before.keys() | f.after.keys() if f.before.get(k) != f.after.get(k)}
+    if differing != {"x-kf-usage"}:
+        return f"{f.path}: only x-kf-usage may change, not {sorted(differing - {'x-kf-usage'}) or 'nothing'}"
     return None
+
+
+def _non_bundle_changes(repo: Path, branch: str) -> list[str]:
+    """Paths (either side of a rename) or mode changes outside bundle/ between main and the branch."""
+    base = _git(repo, "merge-base", MAIN, branch)
+    out = _git(repo, "diff", "--raw", "--no-renames", "-z", base, branch)
+    fields = out.split("\0")
+    bad = []
+    i = 0
+    while i + 1 < len(fields) and fields[i].startswith(":"):
+        meta, path = fields[i].split(), fields[i + 1]
+        old_mode, new_mode = meta[0][1:], meta[1]
+        if not path.startswith(BUNDLE + "/") or (old_mode != "000000" and new_mode != "000000" and old_mode != new_mode):
+            bad.append(path)
+        i += 2
+    return bad
 
 
 def auto_merge_tier0(repo: Path, branch: str) -> MergeResult:
@@ -318,6 +344,9 @@ def auto_merge_tier0(repo: Path, branch: str) -> MergeResult:
         report = run_ci(head_bundle, base=base_bundle)
     if not report.ok:
         raise CiFailed("; ".join(f"{i.check} {i.path}: {i.message}" for i in report.issues))
+    outside = _non_bundle_changes(repo, branch)
+    if outside:
+        raise ReviewRefused("not auto-mergeable: changes outside bundle/ or mode changes: " + ", ".join(outside))
     files = changed_files(repo, branch)
     if not files:
         raise ReviewRefused("nothing to merge")
