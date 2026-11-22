@@ -6,6 +6,7 @@ kf review approve --kind scripted --test-run merges -> flags resolved -> a secon
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,8 @@ from langchain_core.messages import AIMessage
 
 from kf.agent_tools import make_kf_tools
 from kf.bundle.ci import VALIDATOR
-from kf.bundle.okf import load_concept
+from kf.bundle.okf import load_concept, parse_concept
+from kf.bundle.serve import current_concepts
 from kf.cli import main
 from kf.curator.agent import run_curation
 from kf.flags.models import FlagStatus
@@ -23,15 +25,10 @@ from curator.fake_model import ScriptedChatModel, call, say
 
 ROOT = Path(__file__).resolve().parents[2]
 CONCEPT = "domain/severity/sev2.md"
-OLD = "major impact on a key experience."
-NEW = "major impact on a key experience, and the on-call rotation is paged."
-SEV2 = (
+BODY = "# SEV2\n\nSEV2 means major impact on a key experience, and the on-call rotation is paged.\n"
+NEW_CONCEPT = (
     '---\ntype: Definition\ntitle: "SEV2"\ndescription: "SEV2 definition."\nx-kf-kind: domain\n'
-    "x-kf-owner: team:incident-management\nx-kf-review: approved\nx-kf-confidence: high\n"
-    "sources:\n  - id: seed\n    resource: https://example.com/severity\n"
-    "generated:\n  by: seed/1\n  at: '2026-11-01T00:00:00Z'\n"
-    "verified:\n  - by: human:alice\n    at: '2026-11-02T00:00:00Z'\n---\n"
-    f"# SEV2\n\nSEV2 means {OLD}\n"
+    "x-kf-owner: team:incident-management\n---\n" + BODY
 )
 INDEX = '---\nokf_version: "0.3"\ntitle: B\ndescription: d\n---\n\n# Contents\n'
 
@@ -51,27 +48,26 @@ def okf_validator():
 @pytest.fixture
 def world(tmp_path):
     repo = tmp_path / "repo"
-    (repo / "bundle" / "domain" / "severity").mkdir(parents=True)
+    (repo / "bundle").mkdir(parents=True)
     (repo / "bundle" / "index.md").write_text(INDEX)
-    (repo / "bundle" / CONCEPT).write_text(SEV2)
     git(repo, "init", "-q", "-b", "main")
     ident = ("-c", "user.name=t", "-c", "user.email=t@localhost")
     git(repo, *ident, "add", "-A")
     git(repo, *ident, "commit", "-q", "-m", "seed")
     raw = tmp_path / "raw"
     (raw / "wiki").mkdir(parents=True)
-    (raw / "wiki" / "severity.md").write_text(f"SEV2 is {NEW}\n")
+    (raw / "wiki" / "severity.md").write_text("SEV2 means major impact on a key experience, and the on-call rotation is paged.\n")
     return repo, raw, FlagQueue(tmp_path / "state" / "flags.db")
 
 
 def curator_script() -> list[AIMessage]:
     return [
         call("list_flags"),
-        call("kb_read", path=CONCEPT),
+        call("kb_read", path="index.md"),
         call("raw_read", path="wiki/severity.md"),
-        call("decide", target=CONCEPT, op="UPDATE", rationale="flags 1 and 2: SEV2 omits the page",
+        call("decide", target=CONCEPT, op="ADD", rationale="flags 1 and 2: SEV2 is undefined",
              sources=["wiki/severity.md"], confidence="high", flags=[1, 2]),
-        call("kb_edit", path=CONCEPT, old=OLD, new=NEW),
+        call("kb_write", path=CONCEPT, content=NEW_CONCEPT),
         call("run_validator"),
         say("done"),
     ]
@@ -97,14 +93,17 @@ def test_phase0_scripted_end_to_end(world, tmp_path):
     run = run_curation(repo=repo, queue=queue, raw_dir=raw, model=ScriptedChatModel(script=curator_script()),
                        run_id="e2e-1", judge_model=judge())
     assert (run.status, run.branch, run.judge_ok) == ("done", "kf/e2e-1", True)
-    assert [(d.op, d.target) for d in run.decisions] == [("UPDATE", CONCEPT)]
+    assert [(d.op, d.target) for d in run.decisions] == [("ADD", CONCEPT)]
     assert run.flags_out == {1: "in_review", 2: "in_review"}
-    assert NEW in git(repo, "show", f"kf/e2e-1:bundle/{CONCEPT}") and NEW not in (repo / "bundle" / CONCEPT).read_text()
+    assert not (repo / "bundle" / CONCEPT).exists()  # main is untouched
+    on_branch = parse_concept(CONCEPT, git(repo, "show", f"kf/e2e-1:bundle/{CONCEPT}"))
+    assert on_branch.front["x-kf-review"] == "proposed" and "verified" not in on_branch.front
 
     # 3. kf ci passes on the branch (the tier-2 gate reads the scores the eval step recorded)
     wt = tmp_path / "branch-wt"
     git(repo, "worktree", "add", "-q", "--detach", str(wt), "kf/e2e-1")
     assert main(["ci", str(wt / "bundle")]) == 0
+    assert CONCEPT not in [c.path for c in current_concepts(wt / "bundle", now=datetime.now(UTC))]  # a proposed concept is not served
     git(repo, "worktree", "remove", "--force", str(wt))
     record = repo / "state" / "runs" / "e2e-1.json"
     rec = json.loads(record.read_text())
@@ -115,7 +114,8 @@ def test_phase0_scripted_end_to_end(world, tmp_path):
     assert main(["review", "approve", "--repo", str(repo), "--branch", "kf/e2e-1", "--by", "scripted-test",
                  "--kind", "scripted", "--test-run", "--db", str(queue.path)]) == 0
     merged = load_concept(repo / "bundle" / CONCEPT)
-    assert NEW in merged.body and merged.front["x-kf-review"] == "approved"
+    assert BODY in merged.body and merged.front["x-kf-review"] == "approved"
+    assert CONCEPT in [c.path for c in current_concepts(repo / "bundle", now=datetime.now(UTC))]
     assert {"by": "human:scripted-test"}.items() <= merged.front["verified"][-1].items()
     assert [f.status for f in queue.list()] == [FlagStatus.resolved] * 2
     approval = json.loads((repo / "state" / "approvals.jsonl").read_text().splitlines()[0])

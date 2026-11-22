@@ -87,8 +87,7 @@ if [[ $PLAN != 1 ]] && ! uv run python -c "import sys; from pathlib import Path;
 fi
 step "5. Seal it (refuses if the seed bundle already holds a removed text), commit the seal alone"
 run uv run kf seal
-run git add integration/removal.seal
-run git commit -m "chore: seal the removal list" -- integration/removal.seal
+run bash scripts/commit_seal.sh integration/removal.seal
 
 step "6. Baseline: starved graph arm on the held-out seeds, $RUNS runs per scenario"
 run_llm uv run kf eval run --arms graph --starve --heldout --runs "$RUNS"
