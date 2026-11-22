@@ -8,6 +8,7 @@ from typing import Any
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field
 
 _ids = itertools.count(1)
@@ -29,12 +30,14 @@ class ScriptedChatModel(BaseChatModel):
     model_name: str = "scripted-curator"
     script: list[AIMessage] = Field(default_factory=list)
     calls: list[list[BaseMessage]] = Field(default_factory=list)
+    bound: list[list[str]] = Field(default_factory=list)  # tool names offered on each bind_tools
 
     @property
     def _llm_type(self) -> str:
         return "scripted"
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> ScriptedChatModel:
+        self.bound.append([convert_to_openai_tool(t)["function"]["name"] for t in tools])
         return self
 
     def _generate(self, messages: list[BaseMessage], stop: Any = None, run_manager: Any = None,

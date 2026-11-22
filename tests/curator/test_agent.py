@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -6,7 +7,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from kf.cli import main
 from kf.curator import agent as agent_mod
 from kf.curator.agent import run_curation, run_judge
-from kf.curator.tools import CuratorTools
+from kf.curator import tools as tools_mod
+from kf.curator.tools import CuratorError, CuratorTools
 from kf.flags.models import FlagStatus
 
 from .conftest import INJECTION, git
@@ -91,18 +93,84 @@ def test_injection_flag_does_not_escape(repo, injected_queue, raw_dir):
         call("list_flags"),
         call("kb_write", path="../raw/x.json", content="{}"),
         call("write_file", file_path="/raw/x.json", content="{}"),
-        call("write_file", file_path="/kb/x.md", content="x"),
+        call("edit_file", file_path="/kb/data_access/orders.md", old_string="One", new_string="Two"),
         call("delete", file_path="/kb/data_access/orders.md"),
+        call("execute", command="rm -rf /"),
+        call("raw_read", path="wiki/refunds.md"),
+        call("decide", target="data_access/orders.md", op="UPDATE", rationale="the flag says so",
+             sources=["wiki/refunds.md"], confidence="high", flags=[]),
+        call("kb_edit", path="data_access/orders.md", old="by: human:alice", new="by: kf-curator/1"),
         say("done"),
     ])
     run = run_curation(repo=repo, queue=injected_queue, raw_dir=raw_dir, model=model, run_id="r1")
     texts = tool_texts(model)
-    assert texts[1].startswith("error:") and "denied" in texts[1].lower()
-    assert all("error" in t.lower() or "denied" in t.lower() or "not a valid tool" in t.lower() for t in texts[2:])
+    assert texts[1] == "error: WriteDenied: raw/x.json: denied by 'raw/*'"           # write guard
+    assert texts[2] == "Error: write_file is not available."                          # harness profile
+    assert texts[3] == "Error: edit_file is not available."
+    assert texts[4] == "Error: delete is not available."
+    assert texts[5] == "Error: execute is not available."
+    assert texts[8] == "error: WriteDenied: data_access/orders.md: the curator never writes verified"
     assert not (raw_dir / "x.json").exists() and not (repo / "raw").exists()
     assert run.branch is None and git(repo, "branch", "--list", "kf/*") == ""
     assert (repo / "bundle" / "data_access" / "orders.md").is_file()
     assert injected_queue.list()[0].status is FlagStatus.held
+
+
+@pytest.fixture
+def raw_with_late_key(raw_dir, monkeypatch):
+    """A raw root that gains an answer key and a link to it after the start-up check (or one that
+    slipped past it): the per-call checks must still refuse it, in any letter case."""
+    monkeypatch.setattr(tools_mod, "check_raw_dir", lambda d: None)
+    (raw_dir / "_answers").mkdir()
+    (raw_dir / "_answers" / "hero.json").write_text('{"answer": "SECRET-KEY"}')
+    os.symlink(raw_dir / "_answers" / "hero.json", raw_dir / "wiki" / "link.json")
+    return raw_dir
+
+
+def test_answer_key_unreadable_in_any_case_or_via_symlink(repo, queue, raw_with_late_key):
+    model = ScriptedChatModel(script=[
+        call("raw_read", path="_Answers/hero.json"),
+        call("raw_read", path="wiki/link.json"),
+        call("read_file", file_path="/raw/_Answers/hero.json"),
+        call("read_file", file_path="/raw/_ANSWERS/hero.json"),
+        call("read_file", file_path="/raw/wiki/link.json"),
+        call("grep", pattern="SECRET", path="/raw/"),
+        say("done"),
+    ])
+    run_curation(repo=repo, queue=queue, raw_dir=raw_with_late_key, model=model, run_id="r1")
+    texts = tool_texts(model)
+    assert texts[0] == "error: WriteDenied: _Answers/hero.json: denied"
+    assert texts[1] == "error: WriteDenied: wiki/link.json: denied"
+    for t in texts[2:5]:
+        assert t.startswith("Error: permission denied for read on /raw/"), t
+    assert not any("SECRET-KEY" in t for t in texts)
+
+
+@pytest.mark.parametrize("make", ["child", "upper", "link"])
+def test_curator_refuses_raw_dir_holding_answer_key(repo, queue, raw_dir, tmp_path, make):
+    if make == "child":
+        (raw_dir / "_answers").mkdir()
+    elif make == "upper":
+        (raw_dir / "wiki" / "_Answers.json").write_text("{}")
+    else:
+        (tmp_path / "_answers").mkdir()
+        os.symlink(tmp_path / "_answers", raw_dir / "wiki" / "seeds")
+    with pytest.raises(CuratorError, match="answer key"):
+        run_curation(repo=repo, queue=queue, raw_dir=raw_dir, model=ScriptedChatModel(), run_id="r1")
+    assert queue.list()[0].status is FlagStatus.open and git(repo, "branch", "--list", "kf/*") == ""
+
+
+def test_curator_offers_no_shell_or_builtin_writes(repo, queue, raw_dir):
+    model = ScriptedChatModel(script=[say("done")])
+    run_curation(repo=repo, queue=queue, raw_dir=raw_dir, model=model, run_id="r1")
+    offered = set(model.bound[-1])
+    assert {"kb_write", "kb_edit", "read_file", "ls", "task"} <= offered
+    assert offered.isdisjoint({"execute", "write_file", "edit_file", "delete"})
+
+
+def test_unkeyable_model_fails_closed(repo, queue, raw_dir):
+    with pytest.raises(CuratorError, match="harness profile"):
+        run_curation(repo=repo, queue=queue, raw_dir=raw_dir, model=ScriptedChatModel(model_name=""), run_id="r1")
 
 
 def test_flag_text_never_in_system_prompt_or_opening(repo, injected_queue, raw_dir):

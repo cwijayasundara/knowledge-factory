@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -117,11 +118,21 @@ def test_kb_write_outside_allowed_paths_denied(tools, p):
 def test_raw_read_refuses_escape_and_answers(tools, raw_dir):
     (raw_dir / "_answers").mkdir()
     (raw_dir / "_answers" / "hero.json").write_text("{}")
-    for p in ["_answers/hero.json", "../repo/bundle/index.md"]:
+    os.symlink(raw_dir / "_answers" / "hero.json", raw_dir / "wiki" / "link.json")
+    for p in ["_answers/hero.json", "_Answers/hero.json", "_ANSWERS/HERO.JSON", "wiki/link.json",
+              "../repo/bundle/index.md"]:
         with pytest.raises(WriteDenied):
             tools.raw_read(p)
     out = json.loads(tools.raw_read("wiki/refunds.md"))
     assert out["source_id"] == "wiki/refunds.md" and "untrusted" in out["note"].lower()
+
+
+def test_kb_grep_skips_symlinks_out_of_bundle(tools, tmp_path):
+    (tmp_path / "secret.md").write_text("SECRET-KEY\n")
+    os.symlink(tmp_path / "secret.md", tools.worktree / "bundle" / "leak.md")
+    os.symlink(tmp_path, tools.worktree / "bundle" / "leakdir")
+    assert tools.kb_grep("SECRET") == "no matches"
+    assert tools.kb_grep("Orders").startswith("data_access/orders.md:")
 
 
 def test_update_flag_status_only_on_picked_flags(tools, queue):

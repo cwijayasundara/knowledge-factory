@@ -25,6 +25,12 @@ DEFAULT_DENY = [
 FORBIDDEN_PART = "_answers"  # anti-goal A1: the answer key is never reachable
 
 
+def mentions_answers(path: object) -> bool:
+    """True when the path names the answer key in any letter case (macOS and Windows file systems
+    are case-insensitive, so _Answers opens _answers)."""
+    return FORBIDDEN_PART in str(path).casefold()
+
+
 class WriteGuard:
     """Checks repo-relative paths. With a root, symlinks are resolved and must stay inside it."""
 
@@ -37,7 +43,7 @@ class WriteGuard:
         return cls(DEFAULT_DENY, root=root)
 
     def _match(self, rel: str) -> None:
-        if FORBIDDEN_PART in rel:
+        if mentions_answers(rel):
             raise WriteDenied(f"{rel}: denied")
         for pattern in self.deny:
             if fnmatchcase(rel, pattern):
@@ -45,7 +51,7 @@ class WriteGuard:
 
     def check(self, path: str) -> None:
         p = str(path).replace("\\", "/")
-        if FORBIDDEN_PART in p:
+        if mentions_answers(p):
             raise WriteDenied(f"{path}: denied")
         if p.startswith("/"):
             raise WriteDenied(f"{path}: absolute paths are denied")

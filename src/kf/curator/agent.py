@@ -25,7 +25,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from kf.curator.decisions import WRITE_OPS, Decision
-from kf.curator.guard import WriteGuard
+from kf.curator.guard import FORBIDDEN_PART, WriteGuard
 from kf.curator.tools import (CuratorError, CuratorTools, _now, build_curator_tools, delete_branch, get_flag,
                               move_flag, remove_worktree)
 from kf.flags.models import FlagStatus
@@ -44,8 +44,11 @@ INGEST_TOOLS = ("list_flags", "kb_ls", "kb_grep", "kb_read", "raw_read")
 # and exactly the ingest subagent (no auto-added general-purpose one).
 HARNESS = HarnessProfile(excluded_tools=frozenset({"execute", "write_file", "edit_file", "delete"}),
                          general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False))
+_ANSWERS_ANY_CASE = "".join(f"[{c.lower()}{c.upper()}]" if c.isalpha() else c for c in FORBIDDEN_PART)
 PERMISSIONS = [
-    FilesystemPermission(operations=["read", "write"], paths=["/**/_answers", "/**/_answers/**"], mode="deny"),
+    # wcmatch has no per-rule ignorecase here, so the answer key's name is spelled in every letter case.
+    FilesystemPermission(operations=["read", "write"], mode="deny",
+                         paths=[f"/**/*{_ANSWERS_ANY_CASE}*", f"/**/*{_ANSWERS_ANY_CASE}*/**"]),
     FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
 ]
 
@@ -108,15 +111,20 @@ def model_id(model: str | BaseChatModel) -> str:
 
 
 def chat_model(model: str | BaseChatModel) -> BaseChatModel:
-    """The chat model, with HARNESS registered for it (deepagents keys profiles by provider:model)."""
+    """The chat model, with HARNESS registered for it. deepagents keeps harness profiles in a
+    process-wide registry keyed provider:model, so this registration outlives the call and applies to
+    every agent built on that model in the process (e2ekg registers its own the same way). It fails
+    closed: without a key the profile cannot apply and the shell and built-in writes would stay on."""
     if isinstance(model, str):
         extra = {"extra_body": {"reasoning_effort": REASONING_EFFORT}} if model.startswith("fireworks:") else {}
         chat = init_chat_model(model, timeout=REQUEST_TIMEOUT_S, max_retries=3, **extra)
     else:
         chat = model
     provider, ident = get_model_provider(chat), get_model_identifier(chat)
-    if provider and ident:
-        register_harness_profile(f"{provider}:{ident}", HARNESS)
+    if not (provider and ident):
+        raise CuratorError(f"cannot key the curator harness profile for {type(chat).__name__}: "
+                           f"provider={provider!r} model={ident!r}")
+    register_harness_profile(f"{provider}:{ident}", HARNESS)
     return chat
 
 
