@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     sl.add_argument("--verify", action="store_true", help="exit 1 if the list differs from the seal")
     sl.add_argument("--list", default=str(removal.DEFAULT_LIST))
     sl.add_argument("--seal-file", default=str(removal.DEFAULT_SEAL))
+    sl.add_argument("--bundle", default="bundle", help="seed bundle that must not hold any removed text")
     ev = sub.add_parser("eval", help="run e2ekg evals, G2 verdict, metrics").add_subparsers(dest="sub", required=True)
     er = ev.add_parser("run", help="run e2ekg eval over the curation or held-out seeds")
     er.add_argument("--arms", default="graph", help="comma list of e2ekg arms, e.g. graph or graph_kb")
@@ -57,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     er.add_argument("--state-dir", default="state")
     er.add_argument("--data-base", default=".", help="directory holding data_curation/ and data_heldout/")
     er.add_argument("--bundle", default="bundle")
+    er.add_argument("--list", default=str(removal.DEFAULT_LIST), help="removal list (for the seed-overlap check)")
     eg = ev.add_parser("g2", help="G2 verdict from a starved graph run and a graph_kb run")
     eg.add_argument("--starved", required=True, help="run directory of the starved graph run")
     eg.add_argument("--kb", required=True, help="run directory of the graph_kb run")
@@ -115,6 +117,10 @@ def _seal(args) -> int:
             print("seal ok")
             return 0
         print(f"seal mismatch: {args.list} vs {args.seal_file}", file=sys.stderr)
+        return 1
+    overlaps = removal.seed_overlaps(Path(args.bundle), removal.RemovalList.load(Path(args.list)))
+    if overlaps:
+        print(f"refused: the bundle holds removal items: {', '.join(overlaps)}", file=sys.stderr)
         return 1
     print(removal.seal(Path(args.list), Path(args.seal_file)))
     return 0

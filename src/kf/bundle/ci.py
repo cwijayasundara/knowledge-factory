@@ -20,6 +20,7 @@ DEFAULT_PROFILE = REPO_ROOT / "kf-profile.yaml"
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 CODE_RE = re.compile(r"```.*?```|`[^`]*`", re.S)
+FINDING_RE = re.compile(r"^(\S.*?):\d+: (error|warning|info) ([A-Z]\d+) ", re.M)
 PII_PATTERNS = {
     "email": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}"),
     "phone": re.compile(r"(?<![\w.])(?:\+?\d{1,3}[ .-])?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?!\d)"),
@@ -75,6 +76,10 @@ def run_validator(bundle: Path) -> list[Issue]:
     if proc.returncode == 0:
         return []
     out = (proc.stdout + proc.stderr).strip()
+    findings = FINDING_RE.findall(out)
+    # A SKILL.md is untyped on purpose (it is not a concept, OKF 3.2); the validator's W120 about it is expected.
+    if findings and all(code == "W120" and Path(p).name == "SKILL.md" for p, _, code in findings):
+        return []
     return [Issue("okf_validator", str(bundle), f"validate.py --strict exited {proc.returncode}: {out}")]
 
 

@@ -88,6 +88,15 @@ def test_run_ci_reports_validator_and_broken_link(tmp_path):
     assert not r.ok and "links" in {i.check for i in r.issues}
 
 
+@needs_validator
+def test_run_ci_accepts_untyped_skill_but_not_other_untyped_files(tmp_path):
+    skill = concept("name: s\ndescription: d\n")
+    ok = make(tmp_path, "ok", {"orders.md": concept(GOOD), "skills/s/SKILL.md": skill})
+    assert run_ci(ok).ok
+    bad = make(tmp_path, "bad", {"orders.md": concept(GOOD), "notes.md": "no frontmatter\n"})
+    assert not run_ci(bad).ok
+
+
 CUR = "generated: {by: kf-curator/0.1, at: 2026-11-22T02:00:00Z}\n"
 HUM = "generated: {by: human:ana, at: 2026-11-22T02:00:00Z}\n"
 VER = "verified:\n- {by: human:ana, at: 2026-11-23T00:00:00Z}\n"

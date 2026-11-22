@@ -21,6 +21,11 @@ def run(args) -> int:
 
 def _run(args) -> int:
     seeds, prefix = (HELDOUT_SEEDS, "data_heldout") if args.heldout else (CURATION_SEEDS, "data_curation")
+    if args.heldout and not args.test_run and Path(args.list).is_file():
+        overlaps = removal.seed_overlaps(Path(args.bundle), removal.RemovalList.load(Path(args.list)))
+        if overlaps:
+            print(f"refused: the bundle holds removal items: {', '.join(overlaps)}", file=sys.stderr)
+            return 1
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     parent = Path(args.state_dir) / "evals" / stamp
     for seed in seeds:

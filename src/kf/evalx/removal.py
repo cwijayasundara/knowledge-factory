@@ -50,6 +50,19 @@ class RemovalList(BaseModel):
         return cls.model_validate({**data, "items": data.get("items") or []})
 
 
+def _norm(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def seed_overlaps(bundle: Path, removal: RemovalList) -> list[str]:
+    """Ids of removal items whose match text (whitespace and case normalized) appears in any bundle file.
+
+    A seed bundle that already holds a removed text would hand the starved baseline its knowledge back."""
+    texts = [_norm(p.read_text(encoding="utf-8", errors="replace"))
+             for p in sorted(Path(bundle).rglob("*")) if p.is_file() and ".git" not in p.parts]
+    return [i.id for i in removal.items if _norm(i.match) and any(_norm(i.match) in t for t in texts)]
+
+
 def _digest(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
