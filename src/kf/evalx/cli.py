@@ -111,7 +111,7 @@ def _g2(args) -> int:
     approvals = to_approvals(read_approval_records(Path(args.state_dir) / "approvals.jsonl"))
     problems += snapshot_problems(sets["kb"] + sets["seed-kb"], author)
     commit = {n: (sets[n][0].get("commit") if sets[n] else None) for n in ("kb", "seed-kb")}
-    problems += pristine_problems(Path(args.repo), commit["seed-kb"], commit["kb"])
+    problems += pristine_problems(Path(args.repo), commit["seed-kb"], commit["kb"], state_dir=Path(args.state_dir))
     scores, rows = {}, {}
     for name in sets:
         d = getattr(args, {"starved": "starved", "kb": "kb", "seed-kb": "seed_kb"}[name])

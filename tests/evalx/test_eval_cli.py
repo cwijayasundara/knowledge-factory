@@ -38,9 +38,14 @@ class World:
         self.seal = self.repo / "integration" / "removal.seal"
         removal.seal(self.list, self.seal, author="olive")
         self.commit_all("seal")
+        git(self.repo, "checkout", "-q", "-b", "kf/a")
         (self.repo / "bundle" / "c.md").write_text(CURATED.format(who="alice"))
         self.commit_all("curated")
+        git(self.repo, "checkout", "-q", "main")
+        git(self.repo, "merge", "--no-ff", "-q", "-m", "merge kf/a (tier 1)", "kf/a")  # as kf review merges
         self.kb = git(self.repo, "rev-parse", "HEAD")
+        (tmp / "state" / "runs").mkdir(parents=True)
+        (tmp / "state" / "runs" / "a.json").write_text(json.dumps({"run_id": "a", "status": "done"}))
         self.sha = removal.digest(self.list)
         self.snap = {}
         for name, files in (("kb", {"a.md": SEED, "c.md": CURATED.format(who="alice")}), ("seed", {"a.md": SEED})):
@@ -75,6 +80,7 @@ class World:
 
 def _setup(tmp_path, kb_kw=None, seed_kw=None, seed_top1=1, **kw):
     w = World(tmp_path)
+    _approvals(tmp_path)
     w.run_dir(tmp_path / "s", "graph", 0, **kw)
     w.run_dir(tmp_path / "k", "graph_kb", 3, **{**kw, **(kb_kw or {})})
     w.run_dir(tmp_path / "sk", "graph_kb", seed_top1, **{**kw, "commit": w.seed, "snapshot": str(w.snap["seed"]),
@@ -191,6 +197,18 @@ def test_g2_cli_invalid_when_kb_runs_used_two_bundle_commits(tmp_path, capsys):
         (second / f).write_bytes((tmp_path / "k" / f).read_bytes())
     (second / "kf_run.json").write_text(json.dumps({**json.loads(rec.read_text()), "commit": "d" * 40}))
     _invalid(w_argv, capsys, "more than one bundle commit", tmp_path)
+
+
+def test_g2_cli_invalid_when_main_got_a_direct_bundle_commit(tmp_path, capsys):
+    argv = _setup(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / "bundle" / "c.md").write_text(CURATED.format(who="alice") + "hand edit\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "hand")
+    later = git(repo, "rev-parse", "HEAD")
+    rec = tmp_path / "k" / "kf_run.json"
+    rec.write_text(json.dumps({**json.loads(rec.read_text()), "commit": later}))
+    _invalid(argv, capsys, f"commit {later[:12]} is not a curator merge", tmp_path)
 
 
 def test_g2_cli_rejects_an_unstarved_starved_run(tmp_path, capsys):
