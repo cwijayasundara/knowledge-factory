@@ -18,9 +18,19 @@ non-empty output directory.
   a `verified` stamp in the measured bundle) is by the list author.
 - **Where the list lives:** outside the repo working tree, at `~/.kf/removal.yaml` (or `$KF_REMOVAL_LIST`, or
   `--list`). `kf seal` refuses a list inside the repo. The tracked `evalx/removal.template.yaml` is only a
-  template. Only the seal (sha256, author, time) is committed. Each starved eval run copies the list into its own
-  run dir (`state/evals/<run>/seed-N/removal.yaml`, git-ignored) before e2ekg starts; the reviewer does not open
-  `~/.kf/` or `state/evals/`.
+  template. Only the seal (sha256, author, time) is committed. Each starved eval run copies the list, before
+  e2ekg starts, into a private run area outside the repo: `${KF_HOME:-~/.kf}/runs/<run>/seed-N/removal.yaml`
+  (directories mode 0700, file 0600); `kf_run.json` records its path and sha256, and `kf eval g2` checks that the
+  file at that path still matches them and the seal (invalid if it is missing or inside the repo). The repo-side
+  run dir under `state/evals/` holds only `kf_run.json` and results, never list text.
+- **Who runs what:** the list author runs every starved step (6 baseline, 7 flag collection, 11 gate, 13
+  treatment, 14 control, 15 G2) on a machine or account the reviewer does not browse (`~/.kf` / `$KF_HOME` is
+  there). The reviewer only uses `kf review list`, `kf review show` and `kf review approve` / `reject`.
+- **One clock:** pick one ISO timestamp with offset (e.g. `2026-11-20T00:00:00+00:00`) before step 6 and pass it as
+  `--now` to the baseline, the treatment and the control (the same value for all three; `export
+  KF_EVAL_NOW=...` once and use `--now "$KF_EVAL_NOW"`). Headline runs (`--heldout` without `--test-run`) and
+  `kf eval gate` refuse without `--now`; `kf eval g2` is invalid unless the recorded `now` is identical across
+  the three run sets.
 
 ## Before you start
 
@@ -34,7 +44,9 @@ non-empty output directory.
 
 1. **Apply e2ekg.** `bash integration/apply.sh` clones e2ekg at `integration/E2EKG_PIN`, applies the three
    patches (kf tools, `graph_kb` arm, starve switch) and installs `kf` into its environment. It resets
-   an existing `external/e2ekg` clone to the pin (tracked changes there are discarded).
+   an existing `external/e2ekg` clone to the pin (tracked changes there are discarded). Do not re-run it between
+   the baseline (step 6) and G2 (step 15): re-applying can change the recorded e2ekg commit sha, and `kf eval g2`
+   then refuses the measurement as invalid (it fails closed; you have to re-run every arm).
 2. **Curation data**, one data root per curation seed (`data_curation/seed-N`, git-ignored). Run inside
    `external/e2ekg` with absolute paths (the flags are from `e2ekg/cli.py`; `scripts/ingest.sh` fixes its paths
    to `data/`, so it is not used for per-seed roots):
@@ -65,7 +77,7 @@ non-empty output directory.
    (`kf eval run --heldout` without `--test-run` does the same checks). Commit the seal alone:
    `bash scripts/commit_seal.sh`. From here the list must not change; `uv run kf seal --verify` must pass for every
    measured run, and the seal commit must predate the first measured run (`kf eval g2` checks).
-6. **Baseline** (LLM): `uv run kf eval run --arms graph --starve --heldout --runs 3`. One run directory per seed
+6. **Baseline** (LLM, list author): `uv run kf eval run --arms graph --starve --heldout --runs 3 --now "$KF_EVAL_NOW"`. One run directory per seed
    under `state/evals/heldout-<stamp>/seed-N`; keep the `heldout-<stamp>` path for G2 (`--starved`). There is no
    separate baseline file: `kf eval g2` reads the run directory.
 7. **Flag collection** (LLM): `uv run kf eval run --arms graph_kb --starve --runs 3` on the curation seeds
@@ -86,7 +98,8 @@ Ontology proposals are collected but not applied while a measurement runs (spec 
     state/evals/curation-<stamp>/seed-11 --judge-model <a different model>`. Prints the decisions and opens
     `kf/<run_id>` with `state/runs/<run_id>.json`. Held-out trails or raw dirs are refused. `--dry-run` first is
     cheap.
-11. **Gate** (LLM): `uv run kf eval gate --branch kf/<run_id>` runs `graph_kb` (starved) on the curation seeds over
+11. **Gate** (LLM, list author): `uv run kf eval gate --branch kf/<run_id> --now <ISO timestamp>` (one value for
+    both sides; it is recorded in the run record) runs `graph_kb` (starved) on the curation seeds over
     `main` and over the branch (its proposed concepts served as if approved, in a snapshot copy only) and writes
     the scores and their provenance into the run record. Exit 0 PASS, 1 FAIL. Re-run it if `main` or the branch
     moves: `kf review approve` refuses stale gate scores.
@@ -95,18 +108,24 @@ Ontology proposals are collected but not applied while a measurement runs (spec 
     `uv run kf review approve --branch kf/<run_id> --by NAME` (Tier 2 needs `--second-by OTHER` or the judge) or
     `uv run kf review reject kf/<run_id> --by NAME --reason ...`. Tier 0 branches: `uv run kf review auto-merge
     --branch kf/<run_id>`. Tier 3 curator branches are refused. Repeat 9-12 until the flags are worked off.
-13. **Treatment** (LLM): `uv run kf eval run --arms graph_kb --starve --heldout --runs 3` (snapshots `main` once
-    for every seed) -> `state/evals/heldout-<B>`.
-14. **Seed-only control** (LLM): `uv run kf eval run --arms graph_kb --starve --heldout --runs 3
-    --bundle-commit kf-seed` -> `state/evals/heldout-<C>`. Same prompts and arm as the treatment on the pristine
+13. **Treatment** (LLM, list author): `uv run kf eval run --arms graph_kb --starve --heldout --runs 3
+    --now "$KF_EVAL_NOW"` (snapshots `main` once for every seed) -> `state/evals/heldout-<B>`.
+14. **Seed-only control** (LLM, list author): `uv run kf eval run --arms graph_kb --starve --heldout --runs 3
+    --bundle-commit kf-seed --now "$KF_EVAL_NOW"` (the same `--now` as steps 6 and 13) -> `state/evals/heldout-<C>`. Same prompts and arm as the treatment on the pristine
     seed bundle, so the curator is the only difference.
-15. **G2**: `uv run kf eval g2 --starved state/evals/heldout-<A> --kb state/evals/heldout-<B>
+15. **G2** (list author): `uv run kf eval g2 --starved state/evals/heldout-<A> --kb state/evals/heldout-<B>
     --seed-kb state/evals/heldout-<C>` writes `reports/g2-<date>.md`. It passes only when `graph_kb` beats the
     starved arm by at least 2 top1 scenario-runs and beats the seed-only control, with no trap or control false
     positive rise. It is invalid (exit 2, no report) unless the three sets are comparable (data roots, scenarios,
-    runs, per-scenario rows, one e2ekg commit, one bundle commit per kb set, a pristine ancestor seed commit),
-    sealed (every run read the committed seal's list, sealed before the first run), held-out, not test runs, and
-    free of scripted, test-run and list-author approvals.
+    runs, per-scenario rows, one e2ekg commit, one `now`, one bundle commit per kb set, a pristine ancestor seed
+    commit), sealed (every run read a private copy of the committed seal's list, sealed before the first run),
+    held-out, not test runs, and free of scripted, test-run and list-author approvals. It is also invalid unless
+    every `bundle/` change between `kf-seed` and the kb commit came through `kf review` merges of `kf/<run_id>`
+    branches on `main`'s first-parent history (each with `state/runs/<run_id>.json` and an approval, or Tier 0
+    auto, line in `state/approvals.jsonl`), with every added or modified concept written by `kf-curator`. A direct
+    commit to `main` touching `bundle/`, a hand merge, or a concept not written by the curator (including a Tier 0
+    usage bump on a seed concept, and a Tier 0 branch merged with `kf review approve`, which logs no approval line:
+    use `kf review auto-merge`) fails closed. The reason names the commit and file.
 16. **Open the list** (the list author) only after the G2 report is written.
 
 ## Checks that gate a headline

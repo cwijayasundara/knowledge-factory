@@ -10,6 +10,7 @@
 # non-empty output dir, so a seed already on disk is skipped), and commits only integration/removal.seal.
 # It does not write the removal list: that is the list author's job (step 4 of the runbook). The list lives
 # outside the repo: $KF_REMOVAL_LIST or ~/.kf/removal.yaml. Sealing needs KF_LIST_AUTHOR (who wrote it).
+# The baseline (step 6) needs KF_EVAL_NOW: one ISO timestamp reused for every G2 arm.
 set -euo pipefail
 unset VIRTUAL_ENV
 
@@ -96,7 +97,12 @@ run uv run kf seal --list "$LIST" --author "${KF_LIST_AUTHOR:-<list author>}"
 run bash scripts/commit_seal.sh integration/removal.seal
 
 step "6. Baseline: starved graph arm on the held-out seeds, $RUNS runs per scenario"
-run_llm uv run kf eval run --arms graph --starve --heldout --runs "$RUNS" --list "$LIST"
+# One clock for every G2 arm: the treatment and the seed-only control (Phase 1) must reuse this value.
+if [[ $PLAN != 1 && $YES == 1 && -z "${KF_EVAL_NOW:-}" ]]; then
+  echo "Set KF_EVAL_NOW to one ISO timestamp with offset (e.g. 2026-11-20T00:00:00+00:00) and reuse it for steps 13-14." >&2
+  exit 1
+fi
+run_llm uv run kf eval run --arms graph --starve --heldout --runs "$RUNS" --list "$LIST" --now "${KF_EVAL_NOW:-<one ISO timestamp>}"
 
 step "7. Flag collection: graph_kb on the curation seeds (starved, same switch as the baseline)"
 run_llm uv run kf eval run --arms graph_kb --starve --runs "$RUNS" --list "$LIST"
