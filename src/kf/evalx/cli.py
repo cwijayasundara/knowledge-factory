@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from kf.evalx import removal
-from kf.evalx.g2 import g2_verdict, read_approval_records, to_approvals
+from kf.evalx.g2 import coverage_problems, g2_verdict, read_approval_records, to_approvals
 from kf.evalx.metrics import corpus_metrics, curator_metrics
 from kf.evalx.runner import SealRefused, run_eval, scores_from
 from kf.evalx.split import CURATION_SEEDS, HELDOUT_SEEDS
@@ -58,15 +58,24 @@ def _g2(args) -> int:
     seal_ok = seal_now and all(r["seal_ok"] for r in recs)
     heldout = all(r["heldout"] for r in recs) and not any(r["test_run"] for r in recs)
     approvals = to_approvals(read_approval_records(Path(args.state_dir) / "approvals.jsonl"))
-    verdict = g2_verdict(scores_from(Path(args.starved), "graph"), scores_from(Path(args.kb), "graph_kb"),
-                         approvals=approvals, seal_ok=seal_ok, heldout=heldout)
+    scores = {}
+    for name, d, arm in (("starved", args.starved, "graph"), ("kb", args.kb, "graph_kb")):
+        try:
+            scores[name] = scores_from(Path(d), arm)
+        except ValueError as e:
+            problems.append(str(e))
+    if problems:
+        print("invalid: " + "; ".join(problems), file=sys.stderr)
+        return 2
+    verdict = g2_verdict(scores["starved"], scores["kb"], approvals=approvals, seal_ok=seal_ok,
+                         heldout=heldout, coverage=coverage_problems(starved_recs, kb_recs))
     if problems:
         print("invalid: " + "; ".join(problems), file=sys.stderr)
         return 2
     if not verdict.valid:
         print("invalid, no G2 report written: " + "; ".join(verdict.reasons), file=sys.stderr)
         return 2
-    starved, kb = scores_from(Path(args.starved), "graph"), scores_from(Path(args.kb), "graph_kb")
+    starved, kb = scores["starved"], scores["kb"]
     word = "PASS" if verdict.passed else "FAIL"
     body = [f"# G2: {word}", "", f"- starved graph: {starved}", f"- graph_kb: {kb}",
             f"- kb commit: {kb_recs[0]['commit']}", f"- measured: {datetime.now(UTC).isoformat()}"]

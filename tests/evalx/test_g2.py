@@ -14,8 +14,8 @@ PERSON = Approval("alice", "person", NOW)
 S, K = Scores(4, 9, 0, 0), Scores(6, 9, 0, 0)
 
 
-def verdict(starved=S, kb=K, approvals=(PERSON,), seal_ok=True, heldout=True) -> G2Result:
-    return g2_verdict(starved, kb, approvals=list(approvals), seal_ok=seal_ok, heldout=heldout)
+def verdict(starved=S, kb=K, approvals=(PERSON,), seal_ok=True, heldout=True, coverage=None) -> G2Result:
+    return g2_verdict(starved, kb, approvals=list(approvals), seal_ok=seal_ok, heldout=heldout, coverage=coverage)
 
 
 def test_g2_invalid_with_scripted_approval():
@@ -29,6 +29,16 @@ def test_g2_invalid_when_seal_broken():
 
 def test_g2_invalid_on_curation_seeds():
     assert not verdict(heldout=False).valid
+
+
+def test_g2_invalid_on_unequal_scored_runs():
+    v = verdict(kb=Scores(8, 6, 0, 0))
+    assert not v.valid and not v.passed and any("unequal" in r for r in v.reasons)
+
+
+def test_g2_invalid_with_coverage_problem():
+    v = verdict(coverage=["the runs used different seeds"])
+    assert not v.valid and "different seeds" in v.reasons[0]
 
 
 def test_g2_passes_at_plus_two():

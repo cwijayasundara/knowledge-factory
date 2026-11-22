@@ -10,20 +10,22 @@ from kf.evalx import removal
 from kf.evalx.runner import SealRefused
 
 
-def _run_dir(p: Path, arm: str, top1: bool, *, starve: bool, heldout=True, test_run=False, seal_ok=True):
+def _run_dir(p: Path, arm: str, top1: bool, *, starve: bool, heldout=True, test_run=False, seal_ok=True,
+             seed=21, scenarios=("hero",), runs=3, returncode=0, rows=3, arm_rows=None):
     p.mkdir(parents=True)
-    pl.DataFrame([dict(scenario="hero", arm=arm, run=i, top1=i < top1, trap=False, control_false_positive=False)
-                  for i in range(3)]).write_parquet(p / "results.parquet")
-    (p / "kf_run.json").write_text(json.dumps(dict(commit="c" * 40, starve=starve, heldout=heldout,
-                                                    test_run=test_run, seal_ok=seal_ok)))
+    pl.DataFrame([dict(scenario="hero", arm=arm_rows or arm, run=i, top1=i < top1, trap=False,
+                       control_false_positive=False) for i in range(rows)]).write_parquet(p / "results.parquet")
+    (p / "kf_run.json").write_text(json.dumps(dict(
+        commit="c" * 40, starve=starve, heldout=heldout, test_run=test_run, seal_ok=seal_ok,
+        data_root=f"/x/data_heldout/seed-{seed}", scenarios=list(scenarios), runs=runs, returncode=returncode)))
 
 
-def _setup(tmp_path, **kw):
+def _setup(tmp_path, kb_kw=None, **kw):
     lst, seal = tmp_path / "removal.yaml", tmp_path / "removal.seal"
     lst.write_text("items: []\n")
     removal.seal(lst, seal)
     _run_dir(tmp_path / "s", "graph", 0, starve=True, **kw)
-    _run_dir(tmp_path / "k", "graph_kb", 3, starve=False, **kw)
+    _run_dir(tmp_path / "k", "graph_kb", 3, starve=False, **{**kw, **(kb_kw or {})})
     return ["eval", "g2", "--starved", str(tmp_path / "s"), "--kb", str(tmp_path / "k"),
             "--state-dir", str(tmp_path / "state"), "--report", str(tmp_path / "g2.md"),
             "--list", str(lst), "--seal-file", str(seal)]
@@ -87,3 +89,20 @@ def test_eval_metrics_prints_json(tmp_path, capsys):
     assert cli.main(["eval", "metrics", "--state-dir", str(tmp_path / "st"), "--bundle", str(b)]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["curator"]["flags"] == 0 and out["corpus"]["concepts"] == 0
+
+
+@pytest.mark.parametrize("kb_kw,reason", [
+    (dict(scenarios=("hero", "v-x")), "scenarios"),
+    (dict(seed=22), "seeds"),
+    (dict(runs=5), "runs-per-scenario"),
+    (dict(returncode=1), "nonzero"),
+    (dict(rows=2), "unequal scored runs"),
+])
+def test_g2_cli_invalid_when_runs_not_comparable(tmp_path, capsys, kb_kw, reason):
+    assert cli.main(_setup(tmp_path, kb_kw=kb_kw)) == 2
+    assert reason in capsys.readouterr().err and not (tmp_path / "g2.md").exists()
+
+
+def test_g2_cli_missing_arm_is_invalid_not_a_traceback(tmp_path, capsys):
+    assert cli.main(_setup(tmp_path, kb_kw=dict(arm_rows="graph"))) == 2
+    assert "graph_kb" in capsys.readouterr().err

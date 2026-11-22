@@ -56,8 +56,29 @@ def read_approvals(path: Path) -> list[Approval]:
     return to_approvals(read_approval_records(path))
 
 
-def g2_verdict(starved: Scores, kb: Scores, *, approvals: list[Approval], seal_ok: bool, heldout: bool) -> G2Result:
-    invalid = []
+def coverage_problems(starved_recs: list[dict], kb_recs: list[dict]) -> list[str]:
+    """Why two runs' kf_run.json records are not comparable: seeds, scenarios, runs, exit codes."""
+    def keys(recs: list[dict]) -> list[tuple]:
+        return sorted((Path(r.get("data_root", "")).name, tuple(r.get("scenarios", [])), r.get("runs")) for r in recs)
+
+    sk, kk = keys(starved_recs), keys(kb_recs)
+    out = []
+    if [k[0] for k in sk] != [k[0] for k in kk]:
+        out.append("the runs used different seeds")
+    if [k[1] for k in sk] != [k[1] for k in kk]:
+        out.append("the runs used different scenarios")
+    if [k[2] for k in sk] != [k[2] for k in kk]:
+        out.append("the runs used different runs-per-scenario")
+    if any(r.get("returncode") != 0 for r in starved_recs + kb_recs):
+        out.append("an e2ekg eval invocation exited nonzero")
+    return out
+
+
+def g2_verdict(starved: Scores, kb: Scores, *, approvals: list[Approval], seal_ok: bool, heldout: bool,
+               coverage: list[str] | None = None) -> G2Result:
+    invalid = list(coverage or [])
+    if starved.runs != kb.runs:
+        invalid.append(f"unequal scored runs: starved {starved.runs}, kb {kb.runs}")
     if not seal_ok:
         invalid.append("removal list seal missing or broken")
     if any(a.kind == "scripted" for a in approvals):
