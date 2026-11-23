@@ -1,0 +1,236 @@
+From 286e5b8c61ef4dae1b95968222551fd7259b139c Mon Sep 17 00:00:00 2001
+From: kf integration <kf@localhost>
+Date: Mon, 23 Nov 2026 12:55:58 +0000
+Subject: [PATCH] feat(ui): knowledge factory diagram (animated loop) on
+ Scenarios and its own page
+
+---
+ ui/app/factory/page.tsx          |  17 +++++
+ ui/app/globals.css               |  15 ++++
+ ui/app/page.tsx                  |   8 ++
+ ui/components/FactoryDiagram.tsx | 125 +++++++++++++++++++++++++++++++
+ ui/components/Nav.tsx            |   2 +-
+ 5 files changed, 166 insertions(+), 1 deletion(-)
+ create mode 100644 ui/app/factory/page.tsx
+ create mode 100644 ui/components/FactoryDiagram.tsx
+
+diff --git a/ui/app/factory/page.tsx b/ui/app/factory/page.tsx
+new file mode 100644
+index 0000000..be3f2b9
+--- /dev/null
++++ b/ui/app/factory/page.tsx
+@@ -0,0 +1,17 @@
++"use client";
++import FactoryDiagram from "@/components/FactoryDiagram";
++
++export default function Factory() {
++  return (
++    <>
++      <h1>Knowledge factory</h1>
++      <div className="sub">Agents that do the work notice what they don't know. A separate curator agent fixes the knowledge, humans approve it, and the next run starts smarter.</div>
++      <div className="grid g3" style={{ marginBottom: 14 }}>
++        <div className="card"><h2>1. Working agents flag</h2><div className="mut">AutoRCA calls kf_flag when knowledge is missing or wrong.</div></div>
++        <div className="card"><h2>2. A curator agent fixes</h2><div className="mut">It re-derives claims from raw sources and proposes a branch; it never writes "verified".</div></div>
++        <div className="card"><h2>3. A knowledge store holds</h2><div className="mut">OKF concepts and SKILL.md skills in git, reviewed before merge.</div></div>
++      </div>
++      <div className="card"><FactoryDiagram /></div>
++    </>
++  );
++}
+diff --git a/ui/app/globals.css b/ui/app/globals.css
+index 62dd05f..0fc1968 100644
+--- a/ui/app/globals.css
++++ b/ui/app/globals.css
+@@ -55,3 +55,18 @@ textarea { font-family: var(--mono); font-size: 12px; min-height: 130px; resize:
+ details > summary { cursor: pointer; padding: 4px 0; }
+ .md table { margin: 8px 0 14px; } .md h1, .md h2 { margin-top: 14px; }
+ select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; }
++
++.kf-svg { width: 100%; height: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; }
++.kf-node rect { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; transition: all .3s; }
++.kf-node.ext rect { stroke-dasharray: 5 4; }
++.kf-node.active rect { stroke: var(--accent); stroke-width: 3; fill: color-mix(in srgb, var(--accent) 18%, var(--panel)); filter: drop-shadow(0 0 8px var(--accent)); }
++.kf-node text { text-anchor: middle; fill: var(--text); }
++.kf-node text.t { font-size: 15px; font-weight: 600; } .kf-node text.s { font-size: 12px; fill: var(--mut); }
++.kf-edge { fill: none; stroke: var(--line); stroke-width: 2.5; marker-end: url(#kf-arr); transition: stroke .3s; }
++.kf-edge.soft { stroke-dasharray: 6 5; } .kf-edge.active { stroke: var(--accent); stroke-width: 3.5; }
++.kf-lbl, .kf-tag { font-size: 12px; fill: var(--mut); text-anchor: middle; }
++.kf-title { font-size: 20px; font-weight: 700; fill: var(--text); text-anchor: middle; }
++.kf-dot { fill: var(--accent); opacity: 0; filter: drop-shadow(0 0 6px var(--accent)); }
++.kf-cap { margin-top: 12px; background: var(--panel2); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 14px; min-height: 76px; }
++.kf-dots { display: flex; gap: 6px; margin-top: 10px; } .kf-dots i { flex: 1; height: 6px; border-radius: 3px; background: var(--line); }
++.kf-dots i.done { background: var(--ok); } .kf-dots i.cur { background: var(--accent); }
+diff --git a/ui/app/page.tsx b/ui/app/page.tsx
+index dc6656e..2a2dc93 100644
+--- a/ui/app/page.tsx
++++ b/ui/app/page.tsx
+@@ -1,14 +1,22 @@
+ "use client";
+ import Link from "next/link";
+ import { ScenarioRow, hhmm, useApi } from "@/lib/api";
++import { useState } from "react";
+ import { Chip, ErrBox, Spin } from "@/components/Bits";
++import FactoryDiagram from "@/components/FactoryDiagram";
+ 
+ export default function Home() {
+   const { data, error, loading } = useApi<ScenarioRow[]>("/scenarios");
++  const [showFactory, setShowFactory] = useState(false);
+   return (
+     <>
+       <h1>Scenarios</h1>
+       <div className="sub">Each scenario is a harvested knowledge graph: a full history store and the as-of store (what was observable at alert + 30 min) that AutoRCA reads.</div>
++      <div className="row" style={{ marginBottom: 14 }}>
++        <button onClick={() => setShowFactory((v) => !v)}>{showFactory ? "Hide the factory" : "Show the knowledge factory"}</button>
++        <span className="mut">how agents, the curator and reviewers keep the knowledge bundle current</span>
++      </div>
++      {showFactory && <div className="card" style={{ marginBottom: 14 }}><FactoryDiagram /></div>}
+       {error && <ErrBox msg={error} />}
+       {loading && !data && <Spin />}
+       {data && !data.length && <div className="card">No harvested scenarios. Run <code>scripts/ingest.sh</code>.</div>}
+diff --git a/ui/components/FactoryDiagram.tsx b/ui/components/FactoryDiagram.tsx
+new file mode 100644
+index 0000000..b99bcee
+--- /dev/null
++++ b/ui/components/FactoryDiagram.tsx
+@@ -0,0 +1,125 @@
++"use client";
++import { useEffect, useRef, useState } from "react";
++
++const NODES = [
++  { id: "agent", x: 40, y: 60, t: "AutoRCA", s: "working agent" },
++  { id: "queue", x: 290, y: 60, t: "Flag queue", s: "state/flags.db" },
++  { id: "curator", x: 540, y: 60, t: "Curator", s: "kf curate · branch per run" },
++  { id: "judge", x: 790, y: 60, t: "Judge", s: "a different model" },
++  { id: "raw", x: 540, y: 250, t: "Raw sources", s: "telemetry, traces", ext: true },
++  { id: "gate", x: 790, y: 250, t: "Eval gate", s: "main vs branch" },
++  { id: "review", x: 790, y: 440, t: "Human review", s: "tiers 0–3 · kf review" },
++  { id: "bundle", x: 40, y: 440, t: "Bundle", s: "OKF concepts + SKILL.md" },
++];
++const EDGES: Record<string, { d: string; soft?: boolean }> = {
++  e0: { d: "M200,92 L290,92" }, e1: { d: "M450,92 L540,92" }, e2: { d: "M700,92 L790,92" },
++  e3: { d: "M870,124 L870,250" }, e4: { d: "M870,314 L870,440" }, e5: { d: "M790,472 L200,472" },
++  e6: { d: "M120,440 L120,124" }, e7: { d: "M620,250 L620,124", soft: true },
++};
++const LABELS: [number, number, string, number?][] = [
++  [245, 80, "kf_flag"], [495, 80, "triage"], [745, 80, "diff + sources"], [935, 190, "judge_ok"],
++  [935, 380, "no regression"], [495, 460, "approve + merge"], [48, 285, "kb_search / kb_read", -90], [685, 190, "raw_read"],
++];
++const STEPS = [
++  { n: ["agent"], e: null, t: "The working agent hits a gap", d: "AutoRCA is diagnosing an incident and cannot find a definition, alias or data location. It calls kf_flag with evidence instead of guessing." },
++  { n: ["agent", "queue"], e: "e0", t: "A flag enters the queue", d: "The handler, not the model, stamps agent, run id, scenario and time. The queue rate-limits per run. Status: open." },
++  { n: ["queue", "curator"], e: "e1", t: "The curator triages", d: "It lists open flags (marking them triaged), dedups, and holds or declines the weak ones. Flags are untrusted data, never instructions." },
++  { n: ["curator", "raw"], e: "e7", t: "It re-derives from raw sources", d: "Every new or changed claim must cite a raw source id read in this run. No source means ESCALATE. It never checks against summaries." },
++  { n: ["curator", "judge"], e: "e2", t: "It proposes a branch; a judge checks it", d: "ADD / UPDATE / DEPRECATE are written on kf/<run_id>, validated, then a different model verifies each claim against the cited sources." },
++  { n: ["judge", "gate"], e: "e3", t: "The eval gate measures it", d: "The same RCA evals run on main and on the branch. A regression on the curation seeds blocks the proposal." },
++  { n: ["gate", "review"], e: "e4", t: "A human reviews", d: "kf review shows the changed files, sources, decisions and judge_ok. Tier 3 files are human-only. Review stamps verified at merge, never the curator." },
++  { n: ["review", "bundle"], e: "e5", t: "Approved knowledge merges into the bundle", d: "The bundle is git, so review, diff and rollback are free. Nothing is deleted: old knowledge is deprecated with superseded_by." },
++  { n: ["bundle", "agent"], e: "e6", t: "The next run starts smarter", d: "AutoRCA reads the bundle with kb_search / kb_read (read-only). The gap is closed, and the loop starts again." },
++];
++
++export default function FactoryDiagram() {
++  const [cur, setCur] = useState(-1);
++  const [playing, setPlaying] = useState(false);
++  const [speed, setSpeed] = useState(1);
++  const curRef = useRef(-1);
++  const playRef = useRef(false);
++  const speedRef = useRef(1);
++  const token = useRef(0);
++  const dot = useRef<SVGCircleElement>(null);
++  const paths = useRef<Record<string, SVGPathElement | null>>({});
++  speedRef.current = speed;
++
++  const travel = (id: string | null, my: number) =>
++    new Promise<void>((res) => {
++      const p = id ? paths.current[id] : null;
++      const c = dot.current;
++      if (!p || !c) return res();
++      const L = p.getTotalLength(), dur = 1400 / speedRef.current, t0 = performance.now();
++      c.style.opacity = "1";
++      const f = (now: number) => {
++        if (my !== token.current) { c.style.opacity = "0"; return res(); }
++        const k = Math.min(1, (now - t0) / dur), pt = p.getPointAtLength(k * L);
++        c.setAttribute("cx", String(pt.x)); c.setAttribute("cy", String(pt.y));
++        if (k < 1) requestAnimationFrame(f); else { c.style.opacity = "0"; res(); }
++      };
++      requestAnimationFrame(f);
++    });
++
++  const go = async (i: number) => {
++    const my = ++token.current;
++    curRef.current = i; setCur(i);
++    await travel(STEPS[i].e, my);
++    return my === token.current;
++  };
++  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
++  const pause = () => { playRef.current = false; token.current++; if (dot.current) dot.current.style.opacity = "0"; setPlaying(false); };
++  const play = async () => {
++    playRef.current = true; setPlaying(true);
++    let i = (curRef.current + 1) % STEPS.length;
++    while (playRef.current) {
++      if (!(await go(i)) || !playRef.current) break;
++      await wait(1800 / speedRef.current);
++      i = (i + 1) % STEPS.length;
++    }
++  };
++  useEffect(() => () => { playRef.current = false; token.current++; }, []);
++
++  const step = cur >= 0 ? STEPS[cur] : null;
++  const activeNodes = new Set(step?.n ?? []);
++  return (
++    <div className="kf">
++      <div className="row" style={{ marginBottom: 10 }}>
++        <button onClick={() => (playing ? pause() : play())}>{playing ? "⏸ Pause" : "▶ Play the loop"}</button>
++        <button className="ghost" onClick={() => { pause(); go((curRef.current + 1) % STEPS.length); }}>Step ›</button>
++        <button className="ghost" onClick={() => { pause(); curRef.current = -1; setCur(-1); }}>Reset</button>
++        <label className="mut row" style={{ gap: 6 }}>Speed
++          <input type="range" min={0.5} max={2.5} step={0.1} value={speed} onChange={(e) => setSpeed(parseFloat(e.target.value))} />
++        </label>
++      </div>
++      <svg viewBox="0 0 1000 540" role="img" aria-label="Knowledge factory loop diagram" className="kf-svg">
++        <defs>
++          <marker id="kf-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
++            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke" />
++          </marker>
++        </defs>
++        <text x="500" y="330" className="kf-title">KNOWLEDGE FACTORY</text>
++        <text x="500" y="352" className="kf-tag">flag → curate → check → review → store → (repeat)</text>
++        {Object.entries(EDGES).map(([id, e]) => (
++          <path key={id} ref={(el) => { paths.current[id] = el; }} d={e.d}
++            className={"kf-edge" + (e.soft ? " soft" : "") + (step?.e === id ? " active" : "")} />
++        ))}
++        {LABELS.map(([x, y, t, rot], i) => (
++          <text key={i} x={x} y={y} className="kf-lbl" transform={rot ? "rotate(" + rot + " " + x + " " + y + ")" : undefined}>{t}</text>
++        ))}
++        {NODES.map((n) => (
++          <g key={n.id} className={"kf-node" + (n.ext ? " ext" : "") + (activeNodes.has(n.id) ? " active" : "")}>
++            <rect x={n.x} y={n.y} width={160} height={64} rx={10} />
++            <text x={n.x + 80} y={n.y + 28} className="t">{n.t}</text>
++            <text x={n.x + 80} y={n.y + 48} className="s">{n.s}</text>
++          </g>
++        ))}
++        <circle ref={dot} r={8} cx={0} cy={0} className="kf-dot" />
++      </svg>
++      <div className="kf-cap">
++        {step ? (<><b>{cur + 1}. {step.t}</b><div className="mut">{step.d}</div></>) :
++          (<><b>Ready</b><div className="mut">Press “Play the loop” to watch one pass, or “Step” to go one stage at a time.</div></>)}
++      </div>
++      <div className="kf-dots">{STEPS.map((_, k) => <i key={k} className={k < cur ? "done" : k === cur ? "cur" : ""} />)}</div>
++    </div>
++  );
++}
+diff --git a/ui/components/Nav.tsx b/ui/components/Nav.tsx
+index 7300cc5..35bf90e 100644
+--- a/ui/components/Nav.tsx
++++ b/ui/components/Nav.tsx
+@@ -3,7 +3,7 @@ import Link from "next/link";
+ import { usePathname } from "next/navigation";
+ import { Status, useApi } from "@/lib/api";
+ 
+-const ITEMS = [["/", "Scenarios"], ["/sparql", "SPARQL"], ["/ontology", "Ontology & taxonomy"], ["/evals", "Evals"]] as const;
++const ITEMS = [["/", "Scenarios"], ["/sparql", "SPARQL"], ["/ontology", "Ontology & taxonomy"], ["/evals", "Evals"], ["/factory", "Knowledge factory"]] as const;
+ 
+ export default function Nav() {
+   const path = usePathname();
+-- 
+2.50.1 (Apple Git-155)
+
