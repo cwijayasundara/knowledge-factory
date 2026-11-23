@@ -7,7 +7,7 @@ description: Seed bundle for the knowledge factory (incident process, severities
 # Contents
 
 - [Commit messages](data_access/commit-messages.md): Commit content lives in the scenario events log: hash, author, date and subject line per commit.
-- [Span telemetry](data_access/span-telemetry.md): Per-scenario trace spans are exported as OTLP and Zipkin JSONL; per-hop call edges are reconstructed by joining child spans to parents via parentSpanId.
+- [Span telemetry](data_access/span-telemetry.md): Per-scenario trace spans are exported as OTLP JSONL; per-hop call edges are reconstructed by joining child spans to parents via parentSpanId.
 - [Service map](domain/catalog/service-map.md): The software catalog records, per application, the other apps it calls, over which protocol, plus aliases, owner team, tier, regions and kind.
 - [Change kind: Client release](domain/glossary/change-kind-client-release.md): Client release: A device client release.
 - [Change kind: Commit](domain/glossary/change-kind-commit.md): Commit: A source control commit.
