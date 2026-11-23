@@ -210,6 +210,8 @@ def _review_show(repo: Path, branch: str) -> int:
         print("no run record")
         return 0
     print(f"run {record.get('run_id', '-')}\tstatus {record.get('status', '-')}\tjudge_ok {record.get('judge_ok')}")
+    for claim in record.get("judge_unsupported") or []:
+        print(f"judge_unsupported\t{claim}")
     for d in record.get("decisions") or []:
         if not isinstance(d, dict):
             continue

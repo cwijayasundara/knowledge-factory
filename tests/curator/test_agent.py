@@ -73,6 +73,7 @@ def test_judge_rejection_is_recorded(repo, queue, raw_dir):
     run_curation(repo=repo, queue=queue, raw_dir=raw_dir, model=ScriptedChatModel(script=add_script()),
                  run_id="r1", judge_model=judge(supported=False))
     assert record(repo, "r1")["judge_ok"] is False
+    assert record(repo, "r1")["judge_unsupported"] is not None
 
 
 def test_judge_is_null_without_judge_model(repo, queue, raw_dir):
