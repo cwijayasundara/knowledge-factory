@@ -5,6 +5,7 @@ A sample knowledge factory for agents: working agents **flag** the knowledge the
 gate** checks the change does no harm, a **human reviews** it, and a **measurement** (G2) shows whether
 the curated bundle makes agents better. Design: [docs/superpowers/specs/2026-11-22-knowledge-factory-design.md](docs/superpowers/specs/2026-11-22-knowledge-factory-design.md).
 Operating steps: [docs/RUNBOOK.md](docs/RUNBOOK.md). Curator rules: [AGENTS.md](AGENTS.md) (humans only).
+Animated walkthrough of the loop: open [docs/knowledge-factory.html](docs/knowledge-factory.html) in a browser (click "Show the factory", then "Play the loop").
 
 ```
 working agents (e2ekg AutoRCA, arm graph_kb)
