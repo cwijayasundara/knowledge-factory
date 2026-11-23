@@ -6,26 +6,29 @@ description: Seed bundle for the knowledge factory (incident process, severities
 
 # Contents
 
-- [SEV1](domain/severity/sev1.md): SEV1: Critical, widespread member impact.
-- [SEV2](domain/severity/sev2.md): SEV2: Major impact on a key experience.
-- [SEV3](domain/severity/sev3.md): SEV3: Minor or contained impact.
-- [Severity scheme](domain/severity/scheme.md): The closed set of incident severities and their ordering.
-- [Change kind: Deployment](domain/glossary/change-kind-deployment.md): Deployment: A server-side version rollout.
-- [Change kind: Config change](domain/glossary/change-kind-config-change.md): Config change: A dynamic property change.
-- [Change kind: Scaling](domain/glossary/change-kind-scaling.md): Scaling: An autoscaling capacity change.
-- [Change kind: Experiment allocation](domain/glossary/change-kind-experiment-allocation.md): Experiment allocation: An A/B allocation change.
-- [Change kind: Commit](domain/glossary/change-kind-commit.md): Commit: A source control commit.
+- [Commit messages](data_access/commit-messages.md): Commit content lives in the scenario events log: hash, author, date and subject line per commit.
+- [Span telemetry](data_access/span-telemetry.md): Per-scenario trace spans are exported as OTLP and Zipkin JSONL; per-hop call edges are reconstructed by joining child spans to parents via parentSpanId.
+- [Service map](domain/catalog/service-map.md): The software catalog records, per application, the other apps it calls, over which protocol, plus aliases, owner team, tier, regions and kind.
 - [Change kind: Client release](domain/glossary/change-kind-client-release.md): Client release: A device client release.
+- [Change kind: Commit](domain/glossary/change-kind-commit.md): Commit: A source control commit.
+- [Change kind: Config change](domain/glossary/change-kind-config-change.md): Config change: A dynamic property change.
+- [Change kind: Deployment](domain/glossary/change-kind-deployment.md): Deployment: A server-side version rollout.
+- [Change kind: Experiment allocation](domain/glossary/change-kind-experiment-allocation.md): Experiment allocation: An A/B allocation change.
+- [Change kind: Scaling](domain/glossary/change-kind-scaling.md): Scaling: An autoscaling capacity change.
 - [Change kinds](domain/glossary/change-kinds.md): The six closed kinds of change a system records.
-- [Signal types](domain/glossary/signal-types.md): The thirteen signal types a correlation engine reasons over.
-- [Telemetry signal types](domain/glossary/signal-types-telemetry.md): Signal types detected from telemetry.
-- [Declared signal types](domain/glossary/signal-types-declared.md): Signal types that are declared events, not detections.
 - [Fault kinds](domain/glossary/fault-kinds.md): The closed set of fault kinds, plus none when nothing is at fault.
+- [Declared signal types](domain/glossary/signal-types-declared.md): Signal types that are declared events, not detections.
+- [Telemetry signal types](domain/glossary/signal-types-telemetry.md): Signal types detected from telemetry.
+- [Signal types](domain/glossary/signal-types.md): The thirteen signal types a correlation engine reasons over.
+- [Escalation conventions](domain/ownership/escalation.md): Incidents are declared with a severity, responders are paged by rotation.
+- [Incident roles](domain/ownership/incident-roles.md): Who takes part in an incident: owners, responders, mitigators.
+- [Team ownership](domain/ownership/team-ownership.md): Every application in the catalog has an owner team.
 - [Policy: confirming a root cause](domain/policies/confirmed-chain.md): A leading causal chain is confirmed only after a person approves it.
 - [Policy: hypotheses carry evidence](domain/policies/hypotheses-carry-evidence.md): Every hypothesis cites its evidence, because hypotheses can be wrong.
 - [Policy: incident record versions](domain/policies/incident-record-versions.md): Incident records keep every version; the latest is current.
-- [Team ownership](domain/ownership/team-ownership.md): Every application in the catalog has an owner team.
-- [Escalation conventions](domain/ownership/escalation.md): Incidents are declared with a severity, responders are paged by rotation.
-- [Incident roles](domain/ownership/incident-roles.md): Who takes part in an incident: owners, responders, mitigators.
+- [Severity scheme](domain/severity/scheme.md): The closed set of incident severities and their ordering.
+- [SEV1](domain/severity/sev1.md): SEV1: Critical, widespread member impact.
+- [SEV2](domain/severity/sev2.md): SEV2: Major impact on a key experience.
+- [SEV3](domain/severity/sev3.md): SEV3: Minor or contained impact.
 - [classify-incident-severity](skills/classify-incident-severity/SKILL.md): Use when asked to label an incident SEV1, SEV2 or SEV3 or to order incidents by priority.
 - [escalate-incident](skills/escalate-incident/SKILL.md): Use when an incident needs paging, a responder or an owner team contacted.
