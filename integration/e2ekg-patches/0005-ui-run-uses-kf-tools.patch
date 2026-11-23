@@ -1,0 +1,154 @@
+From ff69fce83289425010d0f0232f87cff14de1d6ad Mon Sep 17 00:00:00 2001
+From: kf integration <kf@localhost>
+Date: Mon, 23 Nov 2026 13:13:36 +0000
+Subject: [PATCH] feat(api): UI Run AutoRCA uses the knowledge-factory tools
+ when KF_STATE_DIR and KF_BUNDLE_SNAPSHOT are set
+
+kf is passed to run_rca from _run_job (kf imported lazily), /api/status and jobs report it,
+and the AutoRCA tab shows a chip. Unset, the run is plain AutoRCA as before.
+---
+ src/e2ekg/api/app.py             | 26 +++++++++++++++++-
+ tests/api/test_kf_run.py         | 47 ++++++++++++++++++++++++++++++++
+ ui/app/scenarios/[name]/page.tsx |  1 +
+ ui/lib/api.ts                    |  4 +--
+ 4 files changed, 75 insertions(+), 3 deletions(-)
+ create mode 100644 tests/api/test_kf_run.py
+
+diff --git a/src/e2ekg/api/app.py b/src/e2ekg/api/app.py
+index 387aeee..71a7945 100644
+--- a/src/e2ekg/api/app.py
++++ b/src/e2ekg/api/app.py
+@@ -124,10 +124,31 @@ def root() -> RedirectResponse:
+     return RedirectResponse("/docs")
+ 
+ 
++def _kf_configured() -> bool:
++    """True when the knowledge factory is wired in: the flag queue dir and a bundle snapshot are set."""
++    snap = os.environ.get("KF_BUNDLE_SNAPSHOT")
++    return bool(os.environ.get("KF_STATE_DIR") and snap and Path(snap).is_dir())
++
++
++def _kf_tools(job: dict) -> dict | None:
++    """kf_flag / kb_search / kb_read for one UI run, or None (plain AutoRCA) when the factory is not
++    configured. kf is imported only here, so e2ekg still runs without it installed."""
++    if not _kf_configured():
++        return None
++    try:
++        from kf.agent_tools import make_kf_tools
++    except ImportError:
++        return None
++    return make_kf_tools(queue_path=Path(os.environ["KF_STATE_DIR"]) / "flags.db",
++                         bundle_snapshot=Path(os.environ["KF_BUNDLE_SNAPSHOT"]),
++                         run_id=f"ui__{job['id']}", agent_id="autorca", scenario=job["scenario"])
++
++
+ @app.get("/api/status")
+ def status() -> dict:
+     return {"data_root": str(DATA.resolve()), "scenarios": _scenarios(),
+             "fireworks_key": bool(os.environ.get("FIREWORKS_API_KEY")),
++            "kf": _kf_configured(),
+             "jobs_running": sum(j["state"] == "running" for j in JOBS.values())}
+ 
+ 
+@@ -269,7 +290,10 @@ def _run_job(job_id: str) -> None:
+     job["state"], job["started"] = "running", time.time()
+     trail = Trail()
+     try:
+-        report = run_rca(job["alert"], job["scenario"], root=DATA, trail=trail)
++        kf = _kf_tools(job)
++        job["kf"] = kf is not None
++        report = run_rca(job["alert"], job["scenario"], root=DATA, trail=trail,
++                         **({"kf": kf} if kf else {}))
+         job["trail"] = trail.dump()
+         job["report"] = json.loads(report.model_dump_json())
+         job["state"] = "done"
+diff --git a/tests/api/test_kf_run.py b/tests/api/test_kf_run.py
+new file mode 100644
+index 0000000..e5dfd1d
+--- /dev/null
++++ b/tests/api/test_kf_run.py
+@@ -0,0 +1,47 @@
++"""The UI's Run AutoRCA gets the knowledge-factory tools only when the factory is configured."""
++import pytest
++
++from e2ekg.api import app as app_module
++
++
++@pytest.fixture
++def seen(monkeypatch):
++    got = {}
++
++    def fake_run_rca(alert, scenario, **kw):
++        got.update(kw)
++        raise RuntimeError("stop after capturing the kwargs")
++
++    monkeypatch.setattr("e2ekg.agent.autorca.run_rca", fake_run_rca)
++    return got
++
++
++def run(job_id="j1"):
++    app_module.JOBS[job_id] = {"id": job_id, "scenario": "hero", "alert": "radar-09000", "state": "queued"}
++    app_module._run_job(job_id)
++    return app_module.JOBS.pop(job_id)
++
++
++def test_plain_autorca_without_factory_env(seen, monkeypatch):
++    monkeypatch.delenv("KF_STATE_DIR", raising=False)
++    monkeypatch.delenv("KF_BUNDLE_SNAPSHOT", raising=False)
++    job = run()
++    assert "kf" not in seen and job["kf"] is False
++    assert app_module._kf_configured() is False
++
++
++def test_factory_tools_passed_when_configured(seen, monkeypatch, tmp_path):
++    pytest.importorskip("kf.agent_tools")
++    snap = tmp_path / "snap"
++    snap.mkdir()
++    monkeypatch.setenv("KF_STATE_DIR", str(tmp_path / "state"))
++    monkeypatch.setenv("KF_BUNDLE_SNAPSHOT", str(snap))
++    job = run()
++    assert set(seen["kf"]) == {"kf_flag", "kb_search", "kb_read"} and job["kf"] is True
++    assert app_module._kf_configured() is True
++
++
++def test_missing_snapshot_dir_means_plain(seen, monkeypatch, tmp_path):
++    monkeypatch.setenv("KF_STATE_DIR", str(tmp_path))
++    monkeypatch.setenv("KF_BUNDLE_SNAPSHOT", str(tmp_path / "nope"))
++    assert run()["kf"] is False and "kf" not in seen
+diff --git a/ui/app/scenarios/[name]/page.tsx b/ui/app/scenarios/[name]/page.tsx
+index 7e0999d..1945a7b 100644
+--- a/ui/app/scenarios/[name]/page.tsx
++++ b/ui/app/scenarios/[name]/page.tsx
+@@ -158,6 +158,7 @@ function Rca({ name, defaultAlert }: { name: string; defaultAlert: string }) {
+         <div className="row">
+           <input type="text" value={alert} onChange={(e) => setAlert(e.target.value)} placeholder="radar-09000 or INC-1234" style={{ maxWidth: 260 }} />
+           <button onClick={start} disabled={!!busy || !alert}>{busy ? "Running…" : "Run AutoRCA"}</button>
++          {status.data && (status.data.kf ? <Chip tone="ok">knowledge factory: on</Chip> : <Chip>plain AutoRCA (no knowledge factory)</Chip>)}
+           {job && <span className="mut">job {job.id} · {job.state}{elapsed ? ` · ${elapsed}s` : ""}</span>}
+         </div>
+         {err && <ErrBox msg={err} />}
+diff --git a/ui/lib/api.ts b/ui/lib/api.ts
+index 05125b6..bc913a6 100644
+--- a/ui/lib/api.ts
++++ b/ui/lib/api.ts
+@@ -1,7 +1,7 @@
+ "use client";
+ import { useCallback, useEffect, useState } from "react";
+ 
+-export type Status = { data_root: string; scenarios: string[]; fireworks_key: boolean; jobs_running: number };
++export type Status = { data_root: string; scenarios: string[]; fireworks_key: boolean; kf?: boolean; jobs_running: number };
+ export type Live = { alert: string | null; symptom: string; symptom_kind: string; alert_at: string; as_of: string };
+ export type ScenarioRow = {
+   name: string; quads: number | null; shacl_ok: boolean | null; as_of_quads: number | null; as_of: string | null;
+@@ -30,7 +30,7 @@ export type Hypothesis = { root_cause_uri: string; chain: string[]; confidence:
+ export type Report = { verdict: string; hypotheses: Hypothesis[]; summary: string; failure?: string };
+ export type Job = {
+   id: string; scenario: string; alert: string; state: "queued" | "running" | "done" | "failed";
+-  created: number; started?: number; finished?: number; report?: Report; error?: string;
++  created: number; started?: number; finished?: number; report?: Report; error?: string; kf?: boolean;
+ };
+ export type EvalRun = { name: string; has_results: boolean; meta: Record<string, unknown> };
+ export type EvalDetail = { name: string; summary_md: string; results: Record<string, unknown>[] };
+-- 
+2.50.1 (Apple Git-155)
+

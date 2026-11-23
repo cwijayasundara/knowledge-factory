@@ -43,7 +43,7 @@ non-empty output directory.
 ## Phase 0
 
 1. **Apply e2ekg.** `bash integration/apply.sh` clones e2ekg at `integration/E2EKG_PIN`, applies the three
-   patches (kf tools, `graph_kb` arm, starve switch) and installs `kf` into its environment. It resets
+   patches (kf tools, `graph_kb` arm, starve switch, UI factory diagram, UI runs with the kf tools) and installs `kf` into its environment. It resets
    an existing `external/e2ekg` clone to the pin (tracked changes there are discarded). Do not re-run it between
    the baseline (step 6) and G2 (step 15): re-applying can change the recorded e2ekg commit sha, and `kf eval g2`
    then refuses the measurement as invalid (it fails closed; you have to re-run every arm).
