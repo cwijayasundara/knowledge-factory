@@ -9,6 +9,9 @@ description: Seed bundle for the knowledge factory (incident process, severities
 - [Commit event log](data_access/commit-log.md): Where raw source-control commit content lives and what it records — hash, author, UTC date and a bracketed-app one-line message.
 - [Service catalog dependency map](data_access/service-catalog-dependencies.md): What the application catalog records per app — aliases, owner team, tier, and dependencies — and where the catalog file lives.
 - [Trace span data](data_access/trace-span-data.md): Where raw distributed-trace span data lives (OTLP and Zipkin JSONL), its formats, and the alias pitfall that makes id-verbatim lookups return nothing.
+- [Commit messages](data_access/commit-messages.md): Commit content lives in the scenario events log: hash, author, date and subject line per commit.
+- [Span telemetry](data_access/span-telemetry.md): Per-scenario trace spans are exported as OTLP JSONL; per-hop call edges are reconstructed by joining child spans to parents via parentSpanId.
+- [Service map](domain/catalog/service-map.md): The software catalog records, per application, the other apps it calls, over which protocol, plus aliases, owner team, tier, regions and kind.
 - [Change kind: Client release](domain/glossary/change-kind-client-release.md): Client release: A device client release.
 - [Change kind: Commit](domain/glossary/change-kind-commit.md): Commit: A source control commit.
 - [Change kind: Config change](domain/glossary/change-kind-config-change.md): Config change: A dynamic property change.
