@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     gt.add_argument("--branch", required=True, help="curator branch kf/<run_id>")
     gt.add_argument("--repo", default=str(removal.REPO_ROOT))
     gt.add_argument("--scenarios", default="all", help="comma list of e2ekg scenario names, or all")
-    gt.add_argument("--runs", type=int, default=3, help="runs per scenario and side")
+    gt.add_argument("--runs", type=int, default=1, help="runs per scenario, seed and side")
     gt.add_argument("--state-dir", default=str(removal.REPO_ROOT / "state"))
     gt.add_argument("--data-base", default=str(removal.REPO_ROOT), help="directory holding data_curation/")
     gt.add_argument("--list", default=str(removal.default_list()), help="removal list (both sides are starved)")

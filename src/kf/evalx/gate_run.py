@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,14 +90,24 @@ def run_gate(repo: Path, branch: str, *, scenarios: list[str], runs: int, state_
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_id = branch.removeprefix("kf/")
     parent = state_dir / "evals" / f"gate-{run_id}-{stamp}"
-    for side, commit, snap in (("base", base, None), ("head", head, head_snap)):
-        for seed in CURATION_SEEDS:
-            run(arms=[ARM], scenarios=scenarios, runs=runs,
-                data_root=Path(data_base) / "data_curation" / f"seed-{seed}", bundle_commit=commit,
-                starve=True, state_dir=state_dir, heldout=False, test_run=False, now=now,
-                run_dir=parent / side / f"seed-{seed}", bundle=bundle, removal_list=removal_list,
-                e2ekg_dir=e2ekg_dir, run_prefix=f"gate-{run_id}-{stamp}-{side}-seed{seed}",
-                own_flag_sink=True, snapshot=snap)
+    serve.snapshot(bundle, state_dir / "snapshots", commit=base)  # made once, so the base runs only reuse it
+
+    def one(side: str, commit: str, snap: Path | None, seed: int) -> None:
+        run(arms=[ARM], scenarios=scenarios, runs=runs,
+            data_root=Path(data_base) / "data_curation" / f"seed-{seed}", bundle_commit=commit,
+            starve=True, state_dir=state_dir, heldout=False, test_run=False, now=now,
+            run_dir=parent / side / f"seed-{seed}", bundle=bundle, removal_list=removal_list,
+            e2ekg_dir=e2ekg_dir, run_prefix=f"gate-{run_id}-{stamp}-{side}-seed{seed}",
+            own_flag_sink=True, snapshot=snap)
+
+    # Every (side, seed) is independent: its own run dir, flag sink, private list copy and process.
+    # The eval is LLM-bound, so they run side by side instead of one after another.
+    jobs = [(side, commit, snap, seed)
+            for side, commit, snap in (("base", base, None), ("head", head, head_snap))
+            for seed in CURATION_SEEDS]
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        for fut in [pool.submit(one, *j) for j in jobs]:
+            fut.result()  # re-raise the first failure
     scores = {side: scores_from(parent / side, ARM) for side in ("base", "head")}
     record = json.loads(rec_path.read_text())  # re-read: the eval took a while
     record["scores"] = {k: asdict(v) for k, v in scores.items()}
